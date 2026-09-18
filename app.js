@@ -129,7 +129,7 @@ function renderCapability(mod) {
     return `<button class="module-card" data-facet="${f.id}" data-module="${mod.id}"><span class="module-icon">${f.icon}</span><span class="module-body"><h3>${f.label}</h3><p>${esc(blurb)}</p></span><span class="module-open">Open ↗</span></button>`;
   }).join('');
   const truth = mod.truthNote ? `<div class="truth-card"><b>Truth &amp; safety</b><p>${esc(mod.truthNote)}</p></div>` : '';
-  $('#main').innerHTML = `<div class="page-head"><p class="eyebrow">${st.eyebrow}</p><h1>${esc(mod.label)}</h1><p class="page-sub">${esc(mod.sub)}</p></div>
+  $('#main').innerHTML = `<div class="page-head"><div><p class="eyebrow">${st.eyebrow}</p><h1>${esc(mod.label)}</h1><p class="page-sub">${esc(mod.sub)}</p></div></div>
   <div class="stat-grid">
     <div class="stat-card"><p class="stat-label">Capability state</p><span class="pill ${st.cls}">${st.pill}</span></div>
     <div class="stat-card"><p class="stat-label">Data source</p><p class="stat-value">${esc(mod.source)}</p></div>
@@ -872,7 +872,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.59.0 · 168-SECTION COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.60.0 · 168-SECTION COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

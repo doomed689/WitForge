@@ -24,6 +24,18 @@ node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market,
 node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
 ```
 
+## v1.60 — UI overhaul (ground-up design system)
+
+- **Ground-up visual system rebuilt (`styles.css` rewritten ~10×)**: design tokens (surfaces, lines, elevations, radii, type/mono stacks, accent gradients), ambient scene (violet orbs + blueprint grid, fixed-layer pseudo elements), consistent 12–24px radius/9–70px shadow scales.
+- **Sidebar**: glass panel with edge-light, pulsing brand mark, icon-tile nav items with glow-active state and gradient indicator, section labels with hairlines, elevated mode/status strip card.
+- **Topbar**: frosted glass with gradient hairline, elevated search pill, avatar with gradient ring.
+- **Content**: page heads with gradient display type + eyebrow marker; stat cards with hover lift and edge border animation; pills with glowing dots; module cards with lift + shadow sweep.
+- **Chat**: 600px card with header strip, violet gradient user bubbles (tailed), dark local bubbles, notice styling, elevated composer with focus ring + gradient send button, uppercase hint footer.
+- **Overlays/toast**: palette with deep blur + glow shadow and icon tiles; facet panel refined; toast becomes a pill with slide-up animation; offline banner restyled amber gradient.
+- **Avatar Studio/Arena**: race cards, stat bars (animated gradient fills), avatar hero with radial accent, fight button gradient, battle log line treatments.
+- **System touches**: violet `::selection`, custom scrollbars, kbd styling, entrance animation on page content (reduced-motion respected), responsive grid refinement, favicon added.
+- Zero functional regressions: platform 71, arena 20, smoke 45 — all green. Version bump: 1.60.0.
+
 ## v1.59 — live connectors, verified-state persistence, export/import
 
 - **4 new LIVE connectors (key-free, real data)**: Frankfurter FX (`convert 100 aud to usd`), Wikipedia research (`research <topic>`), Cloudflare DNS-over-HTTPS (`dns <domain>`), local utilities (`hash`, `uuid`, base64, time) — all routed through the guarded SSRF-safe fetch layer.

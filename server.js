@@ -241,7 +241,7 @@ const server = http.createServer(async (req, res) => {
   if ((m = p.match(/^\/api\/avatars\/([^/]+)\/unequip$/)) && req.method === 'POST') { const b = await body(req); return json(res, 200, arena.unequip(m[1], b.slot)); }
 
   if (p === '/api/health') {
-    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.59.0', mode: 'local', time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.60.0', mode: 'local', time: new Date().toISOString() });
   }
 
   /* ── static files ── */
