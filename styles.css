@@ -320,3 +320,12 @@ main{padding:42px 46px 90px;max-width:860px;width:100%}
 @media(max-width:960px){.wizard{grid-template-columns:1fr}.avatar-grid{grid-template-columns:1fr}.arena-grid{grid-template-columns:1fr}.wizard-right{position:static}}
 .studio-output{white-space:pre-wrap;overflow:auto;max-height:300px;margin:10px 0 0;padding:12px;border-radius:10px;border:1px solid #2e213d;background:#07040b;color:#d8cce0;font-size:11px;font-family:ui-monospace,Menlo,monospace}
 select.chip{appearance:auto;background:#120b18;max-width:220px}
+
+/* ── Offline banner (static preview without backend) ─────────────── */
+#offlineBanner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 400;
+  background: #3d2a10; color: #ffd58a; border-bottom: 1px solid #b98a3c;
+  padding: 8px 16px; font-size: 12px; line-height: 1.5; text-align: center;
+}
+#offlineBanner code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; }
+body:has(#offlineBanner) .topbar { margin-top: 38px; }

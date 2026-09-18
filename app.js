@@ -66,13 +66,23 @@ const fmtTime = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', min
 const fmtDate = ts => new Date(ts).toLocaleDateString([], { day: '2-digit', month: 'short' }) + ' ' + fmtTime(ts);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast._h); toast._h = setTimeout(() => { t.hidden = true; }, 2800); }
+let OFFLINE = false;
+function showOfflineBanner() {
+  if ($('#offlineBanner')) return;
+  const b = document.createElement('div');
+  b.id = 'offlineBanner';
+  b.innerHTML = '⚠ <b>BACKEND OFFLINE — STATIC PREVIEW.</b> This page is hosted without the LIAM server. For live control run <code>node server.js</code> locally and open <code>http://127.0.0.1:5173</code>. Nothing here is simulated or faked — data panels stay empty until a real backend answers.';
+  document.body.appendChild(b);
+}
+function enterOffline() { if (!OFFLINE) { OFFLINE = true; showOfflineBanner(); refreshStatus(); } }
 async function api(path, opts) {
   try {
     const r = await fetch(path, opts);
+    if (OFFLINE) { OFFLINE = false; const b = $('#offlineBanner'); if (b) b.remove(); refreshStatus(); }
     if (r.status === 401) { toast('Login required — say “login <password>” in Chat'); return { ok: false, error: 'auth-required' }; }
     return await r.json();
   }
-  catch (e) { toast('Local server unreachable — run node server.js'); return { ok: false, error: 'offline' }; }
+  catch (e) { enterOffline(); return { ok: false, offline: true, error: 'offline' }; }
 }
 const post = (p, b) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
 
@@ -201,6 +211,7 @@ async function sendChat() {
 }
 /* Router: UI intents → server platform intents → Puter (opt-in) → honest fallback */
 async function routeCommand(text) {
+  if (OFFLINE) return { text: 'Backend offline — I cannot act without the LIAM server. This hosted page is a static preview: run “node server.js” in the liam folder locally, then open http://127.0.0.1:5173 for full control. Truth rule intact: I will not pretend to execute anything.' };
   const low = text.toLowerCase().trim();
   let m;
   if ((m = low.match(/^(?:open|go to|show|switch to)\s+(.+)$/))) {
@@ -835,7 +846,17 @@ function refreshStatus() {
   if (!navigator.onLine) { el.textContent = 'offline'; return; }
   el.textContent = window.__liamApi === 'linked' ? 'linked' : (window.__liamApi === 'failed' ? 'online' : 'checking…');
 }
-fetch('/api/health').then(r => r.json()).then(j => { window.__liamApi = j && j.status === 'ok' ? 'linked' : 'failed'; refreshStatus(); }).catch(() => { window.__liamApi = 'failed'; refreshStatus(); });
+function probeHealth() {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const to = ctl ? setTimeout(() => ctl.abort(), 3000) : null;
+  fetch('/api/health', ctl ? { signal: ctl.signal } : {}).then(r => r.json()).then(j => {
+    clearTimeout(to); const ok = j && j.status === 'ok';
+    window.__liamApi = ok ? 'linked' : 'failed';
+    if (ok) { OFFLINE = false; const b = $('#offlineBanner'); if (b) b.remove(); } else enterOffline();
+    refreshStatus();
+  }).catch(() => { if (to) clearTimeout(to); window.__liamApi = 'failed'; enterOffline(); });
+}
+probeHealth(); setInterval(probeHealth, 8000);
 window.addEventListener('online', refreshStatus);
 window.addEventListener('offline', refreshStatus);
 
