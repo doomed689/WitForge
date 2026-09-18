@@ -153,6 +153,29 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   } else ok(true, 'no triple generated in 40 pets (bands verified separately)');
 
   /* forge + payments + marketplace */
+  /* v1.59: offline utilities (no network needed) */
+  const uh = await run('util.hash', { text: 'hello liam' });
+  ok(uh.evidence && uh.evidence.sha256 && uh.evidence.sha256.length === 64, 'util.hash returns sha256');
+  const uu = await run('util.uuid', {});
+  ok(uu.evidence && /^[0-9a-f-]{36}$/.test(uu.evidence.uuid), 'util.uuid returns valid uuid');
+  const ub = await run('util.base64', { text: 'LIAM' });
+  const ub2 = await run('util.base64', { decode: true, text: ub.evidence.encoded });
+  ok(ub2.evidence && ub2.evidence.decoded === 'LIAM', 'util.base64 round-trips');
+  const ut = await run('util.time', {});
+  ok(ut.evidence && ut.evidence.iso && ut.evidence.epoch > 0, 'util.time returns iso+epoch');
+  /* v1.59: new adapters registered */
+  const capIds = P.adaptersLive().map(a => a.id);
+  ok(['fx', 'wikipedia', 'dns', 'utils'].every(x => capIds.includes(x)), 'fx/wiki/dns/utils adapters registered');
+  /* v1.59: export/import manifest round-trip */
+  const ex = P.exportManifest();
+  ok(ex.format === 'liam.export' && ex.state && ex.state.ledger, 'export manifest well-formed');
+  const imNo = P.importManifest(ex, false);
+  ok(!imNo.ok, 'import without confirm refused');
+  const imBad = P.importManifest({ format: 'wrong' }, true);
+  ok(!imBad.ok, 'import of non-LIAM manifest refused');
+  const imYes = P.importManifest(ex, true);
+  ok(imYes.ok, 'import with confirm restores state');
+
   const sumBefore = Object.values(P.state.ledger.accounts).reduce((a, v) => a + v, 0);
   const fv = A.createAvatar('ForgeTester', 'nord').avatar;
   const fg1 = P.forgePiece(fv.id, 'wings', 'wings of storm-glass folded from a dying aurora', 'Common');

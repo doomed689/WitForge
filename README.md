@@ -1,4 +1,4 @@
-# LIAM — AI Control Centre (v1.58 — real payments rails, prompt-forged gear, 42-slot avatars)
+# LIAM · v1.59 — live connectors, payment rails, prompt-forged gear, 42-slot avatars
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -20,9 +20,19 @@ Verification:
 ```sh
 node --check app.js && node --check server.js
 node smoke-test.js      # 45 checks: every module view, palette, chat
-node platform-test.js   # 61 checks: ledger, SSRF, sandbox, auth, forge, market, payment gates
+node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market, payment gates
 node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
 ```
+
+## v1.59 — live connectors, verified-state persistence, export/import
+
+- **4 new LIVE connectors (key-free, real data)**: Frankfurter FX (`convert 100 aud to usd`), Wikipedia research (`research <topic>`), Cloudflare DNS-over-HTTPS (`dns <domain>`), local utilities (`hash`, `uuid`, base64, time) — all routed through the guarded SSRF-safe fetch layer.
+- **Adapters: 14 → 18**, truth-stated via new `/api/capabilities` endpoint.
+- **Connector verification persists**: `verify github` records evidence in state; the github adapter reports `VERIFIED (doomed689)` instead of reverting to CONFIGURED_UNVERIFIED after restarts.
+- **Export/import manifests**: `/api/export` emits a `liam.export` manifest (state snapshot + counts; credentials never leave the encrypted store in plaintext); `/api/import` restores only behind explicit `confirm`.
+- **`/api/selftest` now reports an `allPass` aggregate** alongside the 7 checks.
+- **Hosted on GitHub Pages**: https://doomed689.github.io/WitForge/ serves the static frontend with the honest offline banner when no backend answers.
+- Tests: platform 62 → **71** (util round-trips, adapter registry, export/import safety gates). Arena 20, smoke 45 unchanged — nothing removed, only added.
 
 ## v1.58 — real Stripe rails, prompt-forged unique gear, 42-slot avatars
 

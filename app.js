@@ -231,6 +231,7 @@ async function routeCommand(text) {
 • Accounts & connectors: “create owner account NAME password PASS”, “login PASS”, “logout”, “connect github with token …”, “verify github”, “connections”, “disconnect github”
 • Forge & market: “forge wings at legendary: <your imaginative prompt>”, “forge cost”, “market”, “buy <id>”, “sell <itemId> for <n>”, “delist <id>”
 • Real payments: “connect stripe with token sk_…”, “verify stripe”, “enable real payments confirm”, “create payment 500 ld”, “confirm payment <id>” · Proton has NO public API — never simulated
+• Connectors (live, key-free): “weather <city>”, “convert 100 aud to usd”, “research <topic>”, “dns <domain>”, “hash <text>”, “uuid”, “capabilities”
 • Preview & autonomy: “preview fetch <url>”, “autonomous on confirm”, “autonomous off”
 • Optional external: “ask puter <question>” (only if the Puter bridge loads; output labelled untrusted)` };
   if ((m = low.match(/^(?:create|make)(?: an?)? owner(?: account)?(?: called| named)? ([a-z0-9_-]+) (?:with )?password (.+)$/))) {
@@ -547,7 +548,7 @@ async function renderDocs() {
   const docs = j.ok ? j.docs : [];
   $('#main').innerHTML = head('GOVERNANCE', 'Documentation', 'Versioned legal records with effective dates, architecture lineage and the absolute truth rules. Records are not legal advice.') +
   `<div class="facet-card"><h4>Legal documents (${docs.length})</h4>${docs.map(d => row(d.effective, `<b>${esc(d.title)}</b> v${esc(d.version)} — ${esc(d.summary)} <small>${esc(d.status)}</small>`)).join('')}</div>
-   <div class="facet-card"><h4>Architecture lineage</h4><p>LIAM v16–v20 → WitForge v1.0–v1.54 → IcyT master spec → this build (v1.58). Historical defects are lessons, not features.</p></div>
+   <div class="facet-card"><h4>Architecture lineage</h4><p>LIAM v16–v20 → WitForge v1.0–v1.54 → IcyT master spec → this build (v1.59). Historical defects are lessons, not features.</p></div>
    <div class="facet-card"><h4>Absolute rules</h4><p>§162 Security never bypassable · §163 Ledger authoritative · §164 Engine authoritative over assets · §165 Unavailable is reported as unavailable · §143 No universal security bypass.</p></div>`;
 }
 async function renderProfile() {
@@ -871,7 +872,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.58.0 · 168-SECTION COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.59.0 · 168-SECTION COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

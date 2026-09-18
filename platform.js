@@ -151,7 +151,11 @@ const ADAPTERS = [
   { id: 'proton', name: 'Proton Wallet', caps: [{ id: 'proton.pay', risk: 'high', desc: 'Proton publishes no public payment/wallet merchant API' }], state: 'NO PUBLIC API' },
   { id: 'google', name: 'Google Workspace', caps: [{ id: 'google.api', risk: 'high', desc: 'Gmail/Calendar via OAuth when configured' }], state: 'UNAVAILABLE' },
   { id: 'termux', name: 'Termux Runtime', caps: [{ id: 'termux.run', risk: 'high', desc: 'Real only when a Termux runtime is detected' }], state: process.env.TERMUX ? 'CONFIGURED_UNVERIFIED' : 'UNAVAILABLE' },
-  { id: 'device', name: 'Device Bridges', caps: [{ id: 'device.bridge', risk: 'high', desc: 'ADB/Shizuku/Companion bridges require real pairing' }], state: 'UNAVAILABLE' }
+  { id: 'device', name: 'Device Bridges', caps: [{ id: 'device.bridge', risk: 'high', desc: 'ADB/Shizuku/Companion bridges require real pairing' }], state: 'UNAVAILABLE' },
+  { id: 'fx', name: 'Frankfurter FX', caps: [{ id: 'fx.get', risk: 'low', desc: 'Real currency conversion via Frankfurter/ECB rates (no key required)' }], state: 'AVAILABLE' },
+  { id: 'wikipedia', name: 'Wikipedia Research', caps: [{ id: 'wiki.read', risk: 'low', desc: 'Real article summaries via Wikipedia REST API (no key required)' }], state: 'AVAILABLE' },
+  { id: 'dns', name: 'DNS over HTTPS', caps: [{ id: 'dns.resolve', risk: 'low', desc: 'Real DNS resolution via Cloudflare DoH (no key required)' }], state: 'AVAILABLE' },
+  { id: 'utils', name: 'Local Utilities', caps: [{ id: 'util.run', risk: 'low', desc: 'Offline utilities: hash, uuid, base64, time — deterministic, no network' }], state: 'AVAILABLE' }
 ];
 
 function ssrfSafe(hostname) {
@@ -243,7 +247,43 @@ const TOOLS = {
       S.economy.stripeAccount = { id: j.id, email: j.email, country: j.country, verifiedTs: Date.now() };
       audit('economy', 'STRIPE ACCOUNT VERIFIED ' + j.id + ' (' + j.country + ') — real API evidence', 'system'); save();
       return { stripeAccount: j.id, email: j.email, country: j.country, chargesEnabled: j.charges_enabled };
-    } }
+    } },
+  /* ── v1.59: real key-free connectors ─────────────────────────── */
+  'fx.convert': { cap: 'fx.get', risk: 'low', run: async a => {
+      const amt = Number(a.amount); if (!(amt > 0)) return { error: 'amount must be positive' };
+      const from = String(a.from || 'AUD').toUpperCase().slice(0, 3);
+      const to = String(a.to || 'USD').toUpperCase().slice(0, 3);
+      const r = await guardedFetch('https://api.frankfurter.dev/v1/latest?base=' + encodeURIComponent(from) + '&symbols=' + encodeURIComponent(to));
+      if (!r.ok) return r;
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad FX response' }; }
+      const rate = j.rates && j.rates[to];
+      if (!rate) return { error: 'No rate for ' + from + '→' + to + ' (check currency codes)', truthful: true };
+      return { from, to, amount: amt, rate, result: Math.round(amt * rate * 100) / 100, asOf: j.date, source: 'Frankfurter/ECB (real)' };
+    } },
+  'wiki.summary': { cap: 'wiki.read', risk: 'low', run: async a => {
+      const topic = String(a.topic || '').trim().slice(0, 80); if (!topic) return { error: 'topic required' };
+      const r = await guardedFetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(topic.replace(/ /g, '_')));
+      if (!r.ok) return { error: r.status === 404 ? 'No Wikipedia article found for “' + topic + '”' : ('Wikipedia request failed (HTTP ' + r.status + ')'), truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad Wikipedia response' }; }
+      return { title: j.title, description: j.description || null, extract: (j.extract || '').slice(0, 600), url: j.content_urls && j.content_urls.desktop && j.content_urls.desktop.page, source: 'Wikipedia (real)' };
+    } },
+  'dns.resolve': { cap: 'dns.resolve', risk: 'low', run: async a => {
+      const name = String(a.name || '').trim().toLowerCase().slice(0, 120);
+      if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(name)) return { error: 'valid domain required' };
+      const type = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'CNAME'].includes(String(a.type || 'A').toUpperCase()) ? String(a.type || 'A').toUpperCase() : 'A';
+      const r = await guardedFetch('https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(name) + '&type=' + type, { accept: 'application/dns-json' });
+      if (!r.ok) return r;
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad DoH response' }; }
+      return { name, type, status: j.Status, answers: (j.Answer || []).slice(0, 8).map(x => ({ type: x.type, data: x.data, ttl: x.TTL })), source: 'Cloudflare DoH (real)' };
+    } },
+  /* ── v1.59: offline utilities ────────────────────────────────── */
+  'util.hash': { cap: 'util.run', risk: 'low', run: a => { const t = String(a.text || ''); return { sha256: crypto.createHash('sha256').update(t).digest('hex'), bytes: Buffer.byteLength(t) }; } },
+  'util.uuid': { cap: 'util.run', risk: 'low', run: () => ({ uuid: crypto.randomUUID() }) },
+  'util.base64': { cap: 'util.run', risk: 'low', run: a => {
+      if (a.decode) { try { return { decoded: Buffer.from(String(a.text || ''), 'base64').toString('utf8').slice(0, 5000) }; } catch (e) { return { error: 'Invalid base64' }; } }
+      return { encoded: Buffer.from(String(a.text || ''), 'utf8').toString('base64') };
+    } },
+  'util.time': { cap: 'util.run', risk: 'low', run: () => { const d = new Date(); return { iso: d.toISOString(), utc: d.toUTCString(), epoch: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }; } }
 };
 
 /* ── Economy: balanced double-entry, simulation-labelled ─ */
@@ -354,7 +394,11 @@ async function command(text) {
     const cs = listCreds();
     return R(cs.length ? 'Stored credentials (encrypted at rest, never returned): ' + cs.map(c => c.service).join(', ') : 'No credentials stored. Say “connect <service> with token <token>” and I will store it encrypted and use it only for that service.');
   }
-  if ((m = low.match(/^verify (github)/))) { const r = await runTool('github.status', {}, { confirmed: low.includes('confirm') }); return r.ok ? R('GitHub verified for user: ' + (r.evidence.user || 'unknown') + '. Connector is live.') : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^verify (github)/))) {
+    const r = await runTool('github.status', {}, { confirmed: low.includes('confirm') });
+    if (r.ok) { S.verifiedConnectors = S.verifiedConnectors || {}; S.verifiedConnectors.github = { user: r.evidence.user || 'unknown', verifiedTs: Date.now() }; save(); return R('GitHub verified for user: ' + (r.evidence.user || 'unknown') + '. Connector is live (VERIFIED — real API evidence).'); }
+    return R((r.evidence && r.evidence.error) || r.error);
+  }
   if (low.startsWith('preview ')) { const r = preview(low); return r.ok ? R(r.reply) : R(r.error); }
   if ((m = low.match(/^autonomous (on|off)( confirm)?/))) {
     if (m[1] === 'on' && !m[2]) { const ap = createApproval('autonomous', 'Enable autonomous mode (medium-risk auto-grant during HIGH)'); return R('Autonomous mode is high-impact: approval required (approve ' + ap.id + '), or say “autonomous on confirm”.'); }
@@ -372,8 +416,10 @@ async function command(text) {
   if (low.includes('status') || low.includes('health')) {
     return R(`Systems: emergency=${S.emergency}; adapters=${ADAPTERS.filter(a => a.state === 'AVAILABLE').length} available / ${ADAPTERS.filter(a => a.state === 'UNAVAILABLE').length} unavailable; conversations=${S.conversations.length}; tasks=${S.tasks.length}; audit=${S.audit.length}; ledger mode=SIMULATION.`);
   }
-  if (low.includes('capabilities') || low.includes('adapters')) {
-    return R('Adapters: ' + ADAPTERS.map(a => `${a.id}=${a.state}`).join(' · ') + '. Discovery grants nothing; execution requires your request (permission) and approval for high risk.');
+  if (low.includes('capabilities') || low.includes('adapters') || low === 'what tools' || low === 'list tools') {
+    const live = adaptersLive();
+    const lines = live.map(a => `${a.id.padEnd(10)} ${String(a.state).padEnd(26)} ${a.name}`);
+    return R(`Connectors & adapters (${live.length}) — truth states, live-evaluated:\n` + lines.join('\n') + '\n\nReady now, plain language: “weather <city>”, “convert 100 aud to usd”, “research <topic>”, “dns <domain>”, “hash <text>”, “uuid”. Discovery grants nothing; execution requires your request, and approval for high risk.');
   }
   if (low.includes('security')) return R(`Security shield: emergency=${S.emergency}; permissions granted=${Object.keys(S.permissions).length}; pending approvals=${S.approvals.filter(a => a.status === 'pending').length}; recent security events: ${S.audit.filter(a => a.type === 'security').slice(0, 3).map(a => a.detail).join(' | ') || 'none'}.`);
 
@@ -400,6 +446,13 @@ async function command(text) {
   if ((m = q.match(/^write file ([\w.-]+) (.+)/is))) { const r = await runTool('fs.write', { path: m[1], content: m[2] }, { confirmed: low.includes('confirm') }); return r.ok ? R(`Wrote ${r.evidence.path} (${r.evidence.bytes}B, sha256 ${String(r.evidence.sha256).slice(0, 12)}…).`) : R(r.error); }
   if ((m = q.match(/^list files/))) { const r = await runTool('fs.list', {}, {}); return r.ok ? R('Sandbox files: ' + (r.evidence.files.map(f => f.name).join(', ') || '(empty)')) : R(r.error); }
   if ((m = q.match(/^run (\w+)/))) { const r = await runTool('exec.run', { op: m[1] }, { confirmed: low.includes('confirm') }); return r.ok ? R(`exec ${m[1]} → ` + JSON.stringify(r.evidence.result)) : R((r.evidence && r.evidence.error) || r.error); }
+  /* v1.59 key-free connectors */
+  if ((m = low.match(/^weather (?:in |for )?(.+)$/))) { const r = await runTool('weather.get', { location: m[1] }, {}); return r.ok ? R(`${r.evidence.location}${r.evidence.country ? ', ' + r.evidence.country : ''}: ${r.evidence.tempC}°C, wind ${r.evidence.windspeed} km/h (code ${r.evidence.weathercode}) — real Open-Meteo data.`) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^convert (\d+(?:\.\d+)?) ([a-z]{3})(?:\s+to\s+([a-z]{3}))?$/))) { const r = await runTool('fx.convert', { amount: m[1], from: m[2], to: m[3] || 'USD' }, {}); return r.ok ? R(`${r.evidence.amount} ${r.evidence.from} = ${r.evidence.result} ${r.evidence.to} (rate ${r.evidence.rate}, as of ${r.evidence.asOf}) — real ECB rates.`) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^research (.+)$/))) { const r = await runTool('wiki.summary', { topic: m[1] }, {}); return r.ok ? R(`【${r.evidence.title}】 ${r.evidence.extract}${r.evidence.url ? '\n' + r.evidence.url : ''}`) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^dns ([a-z0-9.-]+)(?: ([a-z]+))?$/))) { const r = await runTool('dns.resolve', { name: m[1], type: m[2] || 'A' }, {}); return r.ok ? R(`DNS ${r.evidence.name} (${r.evidence.type}): ` + (r.evidence.answers.length ? r.evidence.answers.map(a => a.data).join(', ') : 'no records') + ' — real Cloudflare DoH.') : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^(?:hash|sha256) (.+)$/))) { const r = await runTool('util.hash', { text: m[1] }, {}); return R('SHA-256: ' + r.evidence.sha256); }
+  if (low === 'uuid') { const r = await runTool('util.uuid', {}, {}); return R('UUID: ' + r.evidence.uuid); }
   if (low.includes('verify stripe') || low.includes('check stripe')) { const r = await runTool('stripe.verify', {}, { confirmed: low.includes('confirm') }); return r.ok ? R('Stripe account VERIFIED via real API: ' + r.evidence.stripeAccount + ' (' + r.evidence.country + ', ' + r.evidence.email + '). You may now say “enable real payments confirm”.') : R((r.evidence && r.evidence.error) || r.error); }
   if (low.includes('enable real payments')) { const r = setRealMode(true, low.includes('confirm')); return r.ok ? R('REAL-MONEY MODE ENABLED. LD purchases now settle against verified Stripe evidence. The app does not claim licensing — compliance responsibility is the Owner’s, per the master spec.') : R(r.error); }
   if (low.includes('disable real payments')) { const r = setRealMode(false, true); return R('Real-money mode disabled. LD returns to simulation labelling.'); }
@@ -475,7 +528,8 @@ function adaptersLive() {
       return Object.assign({}, a, { state: st });
     }
     if (a.id === 'github') {
-      const st = (S.creds && S.creds.github) || process.env.GITHUB_TOKEN ? 'CONFIGURED_UNVERIFIED' : 'UNAVAILABLE';
+      const has = (S.creds && S.creds.github) || process.env.GITHUB_TOKEN;
+      const st = !has ? 'UNAVAILABLE' : ((S.verifiedConnectors && S.verifiedConnectors.github) ? 'VERIFIED (' + (S.verifiedConnectors.github.user || '') + ')' : 'CONFIGURED_UNVERIFIED');
       return Object.assign({}, a, { state: st });
     }
     return a;
@@ -525,7 +579,7 @@ function selftestAll() {
   checks.push(['token issue/validate/revoke', (() => { grant('selftest.cap', 'self-test'); const v = tokenValid('selftest.cap'); revoke('selftest.cap'); return v; })()]);
   checks.push(['allowlist blocks unknown op', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ]);
   checks.push(['unbalanced ledger rejected', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok]);
-  return { version: '1.58.0', mode: 'local', checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
+  return { version: '1.59.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
 }
 function compliance() {
   const { SECTIONS } = require('./spec-coverage.js');
@@ -672,6 +726,27 @@ function setRealMode(on, confirmed) {
   return { ok: true, realMode: S.economy.realMode };
 }
 
+/* ── v1.59: export / import manifests (truthful, audited) ───────── */
+function exportManifest() {
+  const m = { format: 'liam.export', version: '1.59.0', exportedAt: new Date().toISOString(),
+    counts: { audit: S.audit.length, evidence: S.evidence.length, ledgerTx: S.ledger.tx.length, market: S.market.length, approvals: S.approvals.length },
+    ledgerAccounts: JSON.parse(JSON.stringify(S.ledger.accounts)),
+    economy: { realMode: S.economy.realMode, stripeVerified: !!S.economy.stripeAccount },
+    credentials: listCreds().map(c => c.service),
+    state: JSON.parse(JSON.stringify(S)) };
+  audit('system', 'EXPORT manifest generated (' + m.counts.audit + ' audit rows)', 'user');
+  return m;
+}
+function importManifest(man, confirmed) {
+  if (!man || man.format !== 'liam.export') return { ok: false, error: 'Not a LIAM export manifest' };
+  if (!confirmed) return { ok: false, error: 'Import OVERWRITES the current store. Say “import manifest confirm” to proceed.' };
+  const restored = man.state;
+  if (!restored || !restored.ledger || !restored.audit) return { ok: false, error: 'Manifest malformed (missing ledger/audit)' };
+  S = restored; save();
+  audit('system', 'IMPORT manifest applied (exported ' + man.exportedAt + ')', 'user'); save();
+  return { ok: true, restoredFrom: man.exportedAt };
+}
+
 module.exports = {
   get state() { return S; },
   save, audit, nid,
@@ -685,5 +760,6 @@ module.exports = {
   createPayment, confirmPayment, setRealMode,
   verifyAudit, withCid, tokenValid,
   createOwner, login, logout, sessionValid,
-  selftestAll, compliance, freshState
+  selftestAll, compliance, freshState,
+  exportManifest, importManifest
 };

@@ -217,6 +217,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/api/economy') return json(res, 200, { ok: true, ledger: P.state.ledger, mode: P.state.economy.realMode ? 'REAL' : 'SIMULATION', realMode: P.state.economy.realMode, stripe: P.state.economy.stripeAccount });
   if (p === '/api/forge' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.forgePiece(b.avatarId, b.slot, b.prompt, b.band, b.flavor)); }
+  if (p === '/api/capabilities') return json(res, 200, { ok: true, adapters: P.adaptersLive() });
+  if (p === '/api/export') return json(res, 200, { ok: true, manifest: P.exportManifest() });
+  if (p === '/api/import' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.importManifest(b.manifest, !!b.confirm)); }
   if (p === '/api/market') { P.seedMarket(); return json(res, 200, { ok: true, listings: P.marketList() }); }
   if (p === '/api/market/list' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.listItem(b.avatarId, b.itemId, b.price)); }
   if (p === '/api/market/delist' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.delist(b.listingId)); }
@@ -238,7 +241,7 @@ const server = http.createServer(async (req, res) => {
   if ((m = p.match(/^\/api\/avatars\/([^/]+)\/unequip$/)) && req.method === 'POST') { const b = await body(req); return json(res, 200, arena.unequip(m[1], b.slot)); }
 
   if (p === '/api/health') {
-    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.58.0', mode: 'local', time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.59.0', mode: 'local', time: new Date().toISOString() });
   }
 
   /* ── static files ── */

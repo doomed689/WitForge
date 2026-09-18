@@ -140,7 +140,7 @@ const SECTIONS = [
   C(130, 'UNIVERSAL ACCOUNT LIFECYCLE', 'Connectors', 'PARTIAL', 'Local lifecycle complete; external account ops await connectors.'),
   C(131, 'ACCOUNT CREATION WORKFLOW', 'Connectors', 'POLICY', '16-step legitimate workflow codified; no automated bypass.'),
   C(132, 'ACCOUNT CREATION BOUNDARIES', 'Connectors', 'POLICY', 'No captcha/MFA bypass; user completes verification.'),
-  C(133, 'ACCOUNT PAYMENT', 'Connectors', 'PARTIAL', 'Real Stripe checkout/confirm behind verified key + owner confirm; Proton has NO PUBLIC API.'),
+  C(133, 'ACCOUNT PAYMENT', 'Connectors', 'PARTIAL', 'Real Stripe rails behind verified key + owner confirm; Proton has NO PUBLIC API; FX/weather/wiki/DNS live key-free.'),
   C(134, 'ACCOUNT INVENTORY', 'Connectors', 'LIVE', 'Connection/permission inventory visible in Permissions/Status.'),
   C(135, 'ACCOUNT SWITCHING', 'Account', 'PARTIAL', 'Owner session login/logout; multi-account switching awaits.'),
   C(136, 'ACCOUNT SECURITY CONFIGURATION', 'Account', 'LIVE', 'Owner auth settings, logout, session invalidation.'),
