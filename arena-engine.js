@@ -70,13 +70,47 @@ function publicAvatar(a) {
     race: race ? race.name : a.raceId,
     derived: { maxHP: d.maxHP, maxMP: d.maxMP, maxStam: d.maxStam, dodge: Math.round(d.dodge), crit: Math.round(d.crit), melee: d.melee, spell: d.spell, element: d.element, defense: d.defense, resists: d.res },
     loadoutComplete: REQUIRED_LOADOUT.every(s => a.equipment[s]),
+    talents: talentList(a).slice(), talentPoints: talentPoints(a),
     pets: a.pets || []
   });
 }
 
+/* ── v1.62: talent trees (level-up points → passive passives) ──── */
+const TALENTS = [
+  { id: 'body',      tier: 1, name: 'Hardened Body',  effect: { str: 2, vit: 2 },  desc: '+2 STR, +2 VIT' },
+  { id: 'mind',      tier: 1, name: 'Sharpened Mind', effect: { int: 3 },          desc: '+3 INT' },
+  { id: 'fleet',     tier: 1, name: 'Fleetfoot',      effect: { dex: 3 },          desc: '+3 DEX' },
+  { id: 'bulwark',   tier: 2, name: 'Bulwark',        effect: { hpFlat: 20 },      desc: '+20 max HP' },
+  { id: 'wellspring',tier: 2, name: 'Wellspring',     effect: { mpFlat: 12 },      desc: '+12 max MP' },
+  { id: 'hawk',      tier: 2, name: 'Hawk Eye',       effect: { critBoost: 6 },    desc: '+6 crit chance' },
+  { id: 'warlord',   tier: 3, name: 'Warlord',        effect: { str: 2, vit: 2, dex: 2 }, desc: '+2 STR, VIT, DEX' },
+  { id: 'sage',      tier: 3, name: 'Sage',           effect: { int: 2, mpFlat: 16 },   desc: '+2 INT, +16 MP' },
+  { id: 'phoenix',   tier: 3, name: 'Phoenix',        effect: { hpFlat: 30 },      desc: '+30 max HP' }
+];
+function talentList(a) { a.talents = a.talents || []; return a.talents; }
+function talentPoints(a) { return Math.max(0, (a.level - 1) - talentList(a).length); }
+function talentMods(a) {
+  const m = { str: 0, vit: 0, int: 0, dex: 0, hpFlat: 0, mpFlat: 0, critBoost: 0 };
+  for (const id of talentList(a)) {
+    const t = TALENTS.find(x => x.id === id); if (!t) continue;
+    for (const k in t.effect) m[k] = (m[k] || 0) + t.effect[k];
+  }
+  return m;
+}
+function unlockTalent(avatarId, token) {
+  const a = db.avatars.find(x => x.id === avatarId);
+  if (!a) return { ok: false, error: 'Avatar not found' };
+  const t = TALENTS.find(x => x.id === token || x.name.toLowerCase() === String(token || '').toLowerCase());
+  if (!t) return { ok: false, error: 'Unknown talent — say “talents” for the tree' };
+  if (talentList(a).includes(t.id)) return { ok: false, error: 'Talent already unlocked' };
+  if (talentList(a).length < t.tier - 1) return { ok: false, error: 'Tier ' + t.tier + ' requires ' + (t.tier - 1) + ' earlier talent(s) first' };
+  if (talentPoints(a) < 1) return { ok: false, error: 'No talent points — win battles to level up' };
+  a.talents.push(t.id); save();
+  return { ok: true, talent: t.name, pointsLeft: talentPoints(a) };
+}
 function derived(a) {
   const race = raceOf(a);
-  const s = a.stats;
+  const s = Object.assign({}, a.stats); // cloned: derived() itself applies talent/level mods without mutating
   const eq = a.equipment;
   let defense = Math.floor(s.vit * 0.4);
   const res = { fire: race.r[0], cold: race.r[1], light: race.r[2], poison: race.r[3] };
@@ -88,11 +122,13 @@ function derived(a) {
     else { defense += it.power; }
     if (it.resists) for (const k in it.resists) res[k] = Math.min(75, (res[k] || 0) + it.resists[k]);
   }
-  const maxHP = 30 + s.vit * 5 + s.str + a.level * 6;
-  const maxMP = 12 + s.int * 4 + a.level * 3;
+  const tm = talentMods(a);
+  s.str += tm.str; s.vit += tm.vit; s.int += tm.int; s.dex += tm.dex;
+  const maxHP = 30 + s.vit * 5 + s.str + a.level * 6 + tm.hpFlat;
+  const maxMP = 12 + s.int * 4 + a.level * 3 + tm.mpFlat;
   const maxStam = 20 + s.dex * 2 + s.vit * 2;
   const dodge = 4 + s.dex * 0.8 + perkVal(race, 'swift');
-  const crit = 5 + s.dex * 0.6 + perkVal(race, 'deadly');
+  const crit = 5 + s.dex * 0.6 + perkVal(race, 'deadly') + tm.critBoost;
   const melee = 3 + Math.floor(s.str * 0.9) + a.skills.unarmed.level + wdmg;
   const spell = 2 + Math.floor(s.int * 0.8) + a.skills.destruction.level;
   const element = welem !== 'physical' ? welem : raceElement(race);
@@ -381,6 +417,7 @@ function unequip(avatarId, slot) {
 
 module.exports = {
   RACES, REQUIRED_LOADOUT, SLOTS, RARITY_LEVELS, bandFor, BANDS, BASES,
+  TALENTS, unlockTalent, talentPoints,
   rawAvatar: id => db.avatars.find(x => x.id === id) || null,
   persist: save, rollLoot,
   list: () => db.avatars.filter(a => !a.npc).map(publicAvatar),

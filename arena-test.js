@@ -72,5 +72,21 @@ ok(eng1.REQUIRED_LOADOUT.length === 7 && eng1.REQUIRED_LOADOUT.includes('hand_l'
 ok(eng1.SLOTS.every(sl => Array.isArray(eng1.BASES[sl]) && eng1.BASES[sl].length >= 2), 'bases registry covers every slot');
 ok(['foot_l','foot_r','hand_l','hand_r','arm_upper_l','leg_lower_r','shoulder_l','shoulder_r'].some(sl => eng1.BASES[sl]), 'sided limb slots exist');
 fs.rmSync(tmp, { recursive: true, force: true });
+{
+  const eng3 = freshEngine(path.join(tmp, 't.json'));
+  const t1 = eng3.createAvatar('Talent', 'nord');
+  const tr = eng3.rawAvatar(t1.avatar.id);
+  tr.level = 4; eng3.persist();
+  ok(eng3.talentPoints(tr) === 3, 'level 4 avatar has 3 talent points');
+  const hp0 = eng3.get(t1.avatar.id).derived.maxHP;
+  ok(!eng3.unlockTalent(t1.avatar.id, 'hawk').ok, 'tier-2 talent gated without a tier-1');
+  ok(eng3.unlockTalent(t1.avatar.id, 'body').ok, 'tier-1 talent unlocks');
+  ok(eng3.get(t1.avatar.id).derived.maxHP > hp0, 'talent raises derived maxHP');
+  ok(tr.stats.str === t1.avatar.stats.str && tr.stats.vit === t1.avatar.stats.vit, 'raw stats untouched by derived() — no compounding');
+  ok(eng3.unlockTalent(t1.avatar.id, 'wellspring').ok, 'tier-2 unlocks after tier-1');
+  const after1 = eng3.get(t1.avatar.id).derived.maxHP, after2 = eng3.get(t1.avatar.id).derived.maxHP;
+  ok(after1 === after2, 'repeat derived() calls are stable (idempotent)');
+  ok(eng3.get(t1.avatar.id).talents.length === 2, 'public avatar reports talents');
+}
 console.log(`${checks} arena checks completed, ${fails} failures.`);
 process.exit(fails ? 1 : 0);

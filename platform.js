@@ -32,7 +32,7 @@ function freshState() {
     owner: null, sessions: {}, evidence: [], legal: seedLegal(),
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
-    reminders: [], notifications: [],
+    reminders: [], notifications: [], schedules: [],
     seq: 1
   };
 }
@@ -547,6 +547,12 @@ async function command(text) {
   if (low.includes('lockdown') && low.includes('confirm')) { setEmergency('LOCKDOWN', true); return R('LOCKDOWN engaged. Execution blocked; audit and recovery preserved.'); }
   if (low.includes('lockdown')) { const r = setEmergency('LOCKDOWN'); return r.ok ? R('LOCKDOWN engaged.') : R(r.error); }
   if ((m = low.match(/^approve (\w+)/))) { const r = decideApproval(m[1], 'approve'); return r.ok ? R('Approved: ' + r.approval.desc) : R(r.error); }
+  if ((m = low.match(/^stop schedule (sch-[\w]+)$/))) {
+    const r = S.schedules.find(x => x.id === m[1] && !x.done);
+    if (!r) return R('No active schedule with id ' + m[1] + '.');
+    r.done = true; audit('tool', 'SCHEDULE ' + r.id + ' stopped', 'user'); save();
+    return R(`Schedule ${r.id} stopped after firing ${r.fired}×.`);
+  }
   if ((m = low.match(/^stop (\w+)/))) { const r = decideApproval(m[1], 'stop'); return r.ok ? R('Stopped: ' + r.approval.desc) : R(r.error); }
   if ((m = low.match(/^grant ([\w.]+)/)) ) { grant(m[1]); return R('Permission granted: ' + m[1] + ' (granted by your request, audited).'); }
   if ((m = low.match(/^revoke ([\w.]+)/))) { revoke(m[1]); return R('Permission revoked: ' + m[1]); }
@@ -562,6 +568,34 @@ async function command(text) {
     return R(p.length ? 'Pending reminders:\n' + p.map(r => `• ${r.id} — ${new Date(r.dueTs).toLocaleString()} — ${r.text}`).join('\n') : 'No pending reminders. Say “remind me in 20 minutes stretch”.');
   }
   if (low === 'clear reminders') { const n = S.reminders.filter(r => !r.done).length; S.reminders.forEach(r => r.done = true); audit('tool', n + ' reminders cleared', 'user'); save(); return R(`Cleared ${n} pending reminder(s).`); }
+  /* v1.62: recurring schedules (cron) */
+  if ((m = low.match(/^every (\d+) (seconds?|minutes?|hours?|days?) (?:to )?(.+)$/))) {
+    const unit = { second: 1e3, minute: 6e4, hour: 36e5, day: 864e5 }[m[2].replace(/s$/, '')];
+    if (Number(m[1]) * unit < 10000 && !low.includes('confirm')) return R('Schedules under 10 seconds are noise — say it again plus “confirm” if you really want that cadence.');
+    const r = addSchedule(m[3], Number(m[1]) * unit);
+    return R(`Recurring schedule ${r.id} armed — “${m[3]}” every ${m[1]} ${m[2].replace(/s?$/, '(s)')}. Stop it with “stop schedule ${r.id}”.`);
+  }
+  if (low === 'schedules' || low === 'list schedules') {
+    const p = S.schedules.filter(r => !r.done);
+    const span = r => r.everyMs >= 86400000 ? Math.round(r.everyMs / 86400000) + ' d' : r.everyMs >= 3600000 ? Math.round(r.everyMs / 3600000) + ' h' : r.everyMs >= 60000 ? Math.round(r.everyMs / 60000) + ' min' : Math.round(r.everyMs / 1000) + ' s';
+    return R(p.length ? 'Active schedules:\n' + p.map(r => `• ${r.id} — every ${span(r)} — fired ${r.fired}× — next ${new Date(r.nextTs).toLocaleTimeString()} — ${r.text}`).join('\n') : 'No active schedules. Say “every 2 hours stand up”.');
+  }
+  /* v1.62: avatar talents */
+  if (low === 'talents' || low === 'talent tree') {
+    const arena = require('./arena-engine.js');
+    const avs = arena.list();
+    const tree = arena.TALENTS.map(t => `T${t.tier} ${t.name} — ${t.desc}${avs.length && avs[0].talents.includes(t.id) ? ' ✓' : ''}`).join('\n');
+    const who = avs.length ? `${avs[0].name}: ${avs[0].talents.length} unlocked, ${avs[0].talentPoints} point(s) available.` : 'Create an avatar first (create avatar NAME as nord).';
+    return R(`Talent tree (1 point per level):\n${tree}\n\n${who} Unlock: “unlock talent hawk for ${avs.length ? avs[0].name.toLowerCase() : 'bold'}”.`);
+  }
+  if ((m = low.match(/^unlock talent ([\w '-]+?) for ([\w]+)$/))) {
+    const arena = require('./arena-engine.js');
+    const av = arena.list().find(a => a.name.toLowerCase() === m[2].toLowerCase()) || arena.list()[0];
+    if (!av) return R('No avatars yet — create one first.');
+    const r = arena.unlockTalent(av.id, m[1].trim().replace(/^"|"$/g, ''));
+    audit('tool', r.ok ? `TALENT ${r.talent} unlocked for ${av.name}` : ('TALENT failed: ' + r.error), 'user'); save();
+    return r.ok ? R(`${av.name} learned ${r.talent}. ${r.pointsLeft} talent point(s) left. Stats recalculated server-side (hp/mp/crit applied in derived()).`) : R(r.error);
+  }
   /* v1.61: Hacker News + countries + GitHub file-ops */
   if ((m = low.match(/^(?:news|hn) top(?: (\d+))?$/))) { const r = await runTool('hn.top', { count: m[1] || 5 }, {}); return r.ok ? R('Top Hacker News:\n' + r.evidence.stories.map((x, i) => `${i + 1}. ${x.title} (${x.score}pts, ${x.by})\n   ${x.url}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = low.match(/^country (.+)$/))) { const r = await runTool('country.get', { name: m[1] }, {}); return r.ok ? R(`${r.evidence.flag || ''} ${r.evidence.name}: capital ${r.evidence.capital} · pop ${Number(r.evidence.population).toLocaleString()} · ${r.evidence.region} · ${r.evidence.currencies.join(', ') || '—'} · ${r.evidence.languages.join(', ') || '—'}.`) : R((r.evidence && r.evidence.error) || r.error); }
@@ -738,7 +772,7 @@ function selftestAll() {
   checks.push(['token issue/validate/revoke', (() => { grant('selftest.cap', 'self-test'); const v = tokenValid('selftest.cap'); revoke('selftest.cap'); return v; })()]);
   checks.push(['allowlist blocks unknown op', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ]);
   checks.push(['unbalanced ledger rejected', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok]);
-  return { version: '1.61.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
+  return { version: '1.62.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
 }
 function compliance() {
   const { SECTIONS } = require('./spec-coverage.js');
@@ -909,6 +943,31 @@ function tickReminders() {
   return fired;
 }
 
+
+/* ── v1.62: recurring schedules (cron) ──────────────────────────── */
+function addSchedule(text, everyMs) {
+  const r = { id: 'sch-' + crypto.randomBytes(4).toString('hex'), text: String(text).slice(0, 200), everyMs: Number(everyMs), nextTs: Date.now() + Number(everyMs), fired: 0, done: false, createdTs: Date.now() };
+  S.schedules.push(r);
+  if (S.schedules.length > 40) S.schedules = S.schedules.slice(-40);
+  audit('tool', 'SCHEDULE ' + r.id + ' every ' + Math.round(everyMs / 1000) + 's: ' + r.text.slice(0, 60), 'user');
+  save();
+  return r;
+}
+function tickSchedules() {
+  const now = Date.now(); let fired = 0;
+  for (const r of S.schedules) {
+    if (r.done || r.nextTs > now) continue;
+    r.fired++; fired++;
+    S.notifications.unshift({ ts: now, kind: 'schedule', text: r.text });
+    r.nextTs = now + r.everyMs; // re-arm from now (no catch-up storm)
+  }
+  if (fired) {
+    if (S.notifications.length > 100) S.notifications.length = 100;
+    audit('tool', fired + ' scheduled task(s) fired', 'system'); save();
+  }
+  return fired;
+}
+
 /* ── v1.59: export / import manifests (truthful, audited) ───────── */
 function exportManifest() {
   const m = { format: 'liam.export', version: '1.59.0', exportedAt: new Date().toISOString(),
@@ -945,5 +1004,6 @@ module.exports = {
   createOwner, login, logout, sessionValid,
   selftestAll, compliance, freshState,
   exportManifest, importManifest,
-  addReminder, tickReminders
+  addReminder, tickReminders,
+  addSchedule, tickSchedules
 };

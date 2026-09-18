@@ -188,6 +188,19 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   /* v1.61: github list is truthful either way (UNAVAILABLE without creds, or honest API failure with a bad token) */
   const ghNoTok = await P.command('github list files');
   ok(ghNoTok.reply && /UNAVAILABLE|GitHub list failed/.test(ghNoTok.reply), 'github list reports truthful connector state (no fabrication)');
+  /* v1.62: recurring schedules (cron) */
+  const sch1 = P.addSchedule('hydrate and stretch', -1000); // already due
+  ok(P.tickSchedules() >= 1 && sch1.fired === 1 && !sch1.done && sch1.nextTs > Date.now() - 60000, 'schedule fires and re-arms');
+  sch1.nextTs = Date.now() - 1000;
+  ok(P.tickSchedules() >= 1 && sch1.fired === 2, 'schedule fires again on next due tick');
+  const schv = await P.command('every 2 hours stand up');
+  ok(schv.reply && schv.reply.includes('sch-'), 'chat arms recurring schedule');
+  const schList = await P.command('schedules');
+  ok(schList.reply && schList.reply.includes('stand up'), 'schedules list shows item');
+  const schId = P.state.schedules.find(x => x.text === 'stand up').id;
+  const schStop = await P.command('stop schedule ' + schId);
+  ok(schStop.reply && P.state.schedules.find(x => x.id === schId).done, 'stop schedule cancels it');
+
   /* v1.61: country/topic validation without network risk */
   const ctyEmpty = await P.command('country ');
   const newsBad = await P.command('news top 0'); // count 0 → clamped to 1, doesn't error deterministically; skip assert on network

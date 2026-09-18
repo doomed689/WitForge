@@ -24,6 +24,14 @@ node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market,
 node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
 ```
 
+## v1.62 — recurring cron schedules + avatar talent trees
+
+- **Recurring schedules (real cron)**: `every 2 hours stand up` arms a server-ticked recurring task (30s+ cadences require `confirm`); fires via notification; `schedules` lists cadence/fired-count/next-fire; `stop schedule <id>` cancels. Ticker runs server-side every 15s alongside reminders.
+- **Avatar talent trees** (arena-engine): 9 talents in 3 tiers — T1 Hardened Body/Sharpened Mind/Fleetfoot → T2 Bulwark/Wellspring/Hawk Eye → T3 Warlord/Sage/Phoenix. One point per level; tier gating (T2 needs a T1, T3 needs two); effects (`str/vit/int/dex`, `hpFlat`, `mpFlat`, `critBoost`) applied in `derived()` — **server-authoritative, raw stats never mutated (guarded against compounding)**. Public avatars report talents + points; chat intents `talents`, `unlock talent <name> for <avatar>`.
+- Battle rewards already grant XP/loot (+/0.6 roll) — talent points flow from real level-ups.
+- Intent-order fix: `stop schedule <id>` placed above the generic approval `stop` matcher.
+- Tests: platform 81 → **86** (schedule fire/re-arm/cancel), arena 20 → **28** (points math, tier gating, derived-effects, no-mutation, idempotency). Smoke 45 unchanged.
+
 ## v1.61 — scheduler, repo file-ops, more live connectors
 
 - **Reminder/notification system**: `remind me in 20 minutes stretch` schedules server-side reminders that tick every 15s even with the chat closed; due reminders become notifications, surfaced in the UI via toast + chat notice (10s poller, watermark-guarded). `reminders` / `clear reminders` intents.
