@@ -345,8 +345,8 @@ async function command(text) {
   if ((m = low.match(/^connect (proton)(?: .*)?$/)) || low === 'connect proton') {
     return R('Proton publishes NO public payment/wallet merchant API, so a real integration cannot exist. I will not simulate one. Proton connector state stays “NO PUBLIC API”. For receiving real payments, use Stripe: “connect stripe with token sk_…”, then “verify stripe”.');
   }
-  if ((m = low.match(/^connect ([a-z0-9-]+) (?:with )?(?:token )?(.+)$/))) {
-    const r = setCredential(m[1], m[2].trim());
+  if ((m = q.match(/^connect ([a-zA-Z0-9-]+) (?:with )?(?:token )?(.+)$/i))) {
+    const r = setCredential(m[1].toLowerCase(), m[2].trim());
     return r.ok ? R(`Credential for ${r.service} stored encrypted. Run “verify ${r.service}” (or the adapter's status tool) to prove it works — configuration alone never counts as connected.`) : R(r.error);
   }
   if ((m = low.match(/^(?:disconnect|revoke credential for) ([a-z0-9-]+)$/))) { const r = revokeCredential(m[1]); return r.ok ? R('Credential for ' + m[1] + ' revoked and destroyed.') : R(r.error); }

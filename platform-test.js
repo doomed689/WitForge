@@ -97,6 +97,10 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(P.decryptToken('github') === 'ghp_test_123', 'credential decrypts (AES-256-GCM)');
   ok(JSON.stringify(P.state.creds.github).indexOf('ghp_test_123') === -1, 'token not stored in plaintext');
   ok(P.listCreds().length === 1 && !JSON.stringify(P.listCreds()).includes('ghp_test_123'), 'inventory exposes metadata only');
+  /* case preservation through the connect command (regression: token was lowercased) */
+  const cc = await P.command('connect TestSvc with token AbC123xYz_MiXeD');
+  ok(cc.ok && P.decryptToken('testsvc') === 'AbC123xYz_MiXeD', 'connect command stores token with exact case');
+  P.revokeCredential('testsvc');
 
   /* owner auth */
   const o1 = P.createOwner('Greg', 'longpassword1');
