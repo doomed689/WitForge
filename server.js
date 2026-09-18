@@ -86,6 +86,8 @@ const server = http.createServer(async (req, res) => {
       conversations: s.conversations, tasks: s.tasks, projects: s.projects, agents: s.agents,
       memory: s.memory, knowledge: s.knowledge, audit: s.audit, permissions: s.permissions,
       approvals: s.approvals, emergency: s.emergency, ledger: s.ledger,
+      reminders: s.reminders, schedules: s.schedules, notifications: s.notifications.slice(0, 30),
+      avatars: arena.list(), talentTree: arena.TALENTS,
       adapters: P.adaptersLive().map(a => ({ id: a.id, name: a.name, state: a.state, caps: a.caps })),
       creds: P.listCreds(), owner: !!P.state.owner, authed, autonomous: P.state.autonomous
     });
@@ -242,7 +244,7 @@ const server = http.createServer(async (req, res) => {
   if ((m = p.match(/^\/api\/avatars\/([^/]+)\/unequip$/)) && req.method === 'POST') { const b = await body(req); return json(res, 200, arena.unequip(m[1], b.slot)); }
 
   if (p === '/api/health') {
-    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.62.0', mode: 'local', time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.63.0', mode: 'local', time: new Date().toISOString() });
   }
 
   /* ── static files ── */

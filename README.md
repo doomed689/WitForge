@@ -24,6 +24,15 @@ node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market,
 node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
 ```
 
+## v1.63 — UI panels for the new systems + loot selling
+
+- **Automations view (module state flipped truthfully)**: the built-in scheduler runtime means "Connected runtime required" was no longer honest — the module is now `operational` with a live panel: stats, arm-in-plain-language box, active schedules with stop buttons (cadence/fired/next), pending reminders with clear-all.
+- **Notifications view**: real event feed (reminder/schedule fires), truth boundary card for external delivery (none connected).
+- **Inventory view**: avatar loot with rarity colours, sell-to-marketplace with inline price entry (settles in the labelled simulation ledger).
+- **Talents panel in Avatar Studio**: per-avatar talent tree with OWNED / TIER-GATED / NO POINTS / Unlock states, one-click unlock through the audited chat pipeline.
+- `/api/state` now carries `reminders`, `schedules`, `notifications`, `avatars`, `talentTree` (additive only).
+- Tests: platform 86, arena 28, smoke 45 — all green (a `querySelectorAll` incompatibility with the smoke DOM harness was caught and fixed with delegated click handling).
+
 ## v1.62 — recurring cron schedules + avatar talent trees
 
 - **Recurring schedules (real cron)**: `every 2 hours stand up` arms a server-ticked recurring task (30s+ cadences require `confirm`); fires via notification; `schedules` lists cadence/fired-count/next-fire; `stop schedule <id>` cancels. Ticker runs server-side every 15s alongside reminders.

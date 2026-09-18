@@ -24,7 +24,7 @@ const MODULES = [
     truthNote: 'This capability is intentionally shown as configuration-required until a real provider, credential and verification flow are connected. Use “fetch <url>” or “weather in <place>” in Chat for real guarded retrievals.'
   }),
   m('tasks', 'CORE', 'Tasks', '✓', 'operational', 'Local LIAM store', 'Create, track and verify work items — by UI or by asking LIAM.'),
-  m('automations', 'CORE', 'Automations', '↻', 'config', 'Connected runtime required', 'Scheduled and event-driven workflows need a connected execution runtime.'),
+  m('automations', 'CORE', 'Automations', '↻', 'operational', 'Built-in scheduler runtime', 'Server-ticked reminders and recurring schedules (15s tick, survives closed chat) — real, audited events.'),
   m('memory', 'CORE', 'Memory', '●', 'operational', 'Local LIAM store', 'Persistent records with provenance. Memory is information — not authority.'),
   m('files', 'CORE', 'Files', '▤', 'operational', 'Sandboxed filesystem', 'Real reads/writes inside the server userfiles sandbox, path-traversal protected, integrity-hashed.'),
   m('knowledge', 'AI', 'Knowledge', '✦', 'operational', 'Local LIAM store', 'Indexed records with provenance; untrusted until verified.'),
@@ -57,7 +57,7 @@ const MODULES = [
 ];
 const byId = id => MODULES.find(x => x.id === id);
 const SECTIONS = ['CORE', 'AI', 'CONTROL', 'SECURITY', 'ACCOUNT', 'COMMERCE', 'SYSTEM'];
-const LIVE = new Set(['chat', 'conversations', 'tasks', 'projects', 'agents', 'memory', 'knowledge', 'files', 'tools', 'permissions', 'approvals', 'security', 'audit', 'ldcoins', 'status', 'settings', 'spec', 'documentation', 'profile', 'puter', 'avatar', 'arena', 'marketplace']);
+const LIVE = new Set(['chat', 'conversations', 'tasks', 'projects', 'agents', 'memory', 'knowledge', 'files', 'tools', 'permissions', 'approvals', 'security', 'audit', 'ldcoins', 'status', 'settings', 'spec', 'documentation', 'profile', 'puter', 'avatar', 'arena', 'marketplace', 'automations', 'notifications', 'inventory']);
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 const $ = s => document.querySelector(s);
@@ -163,7 +163,7 @@ function openFacet(moduleId, facetId) {
 /* ── Live workspaces ─────────────────────────────────────────────── */
 async function renderLive(id) {
   await refreshState();
-  ({ chat: renderChat, conversations: renderConversations, tasks: renderTasks, projects: renderProjects, agents: renderAgents, memory: renderMemory, knowledge: renderKnowledge, files: renderFiles, tools: renderTools, permissions: renderPermissions, approvals: renderApprovals, security: renderSecurity, audit: renderAudit, ldcoins: renderLD, status: renderStatus, settings: renderSettings, puter: renderPuter, avatar: renderAvatarStudio, arena: renderArena, spec: renderSpec, documentation: renderDocs, profile: renderProfile, marketplace: renderMarket })[id]();
+  ({ chat: renderChat, conversations: renderConversations, tasks: renderTasks, projects: renderProjects, agents: renderAgents, memory: renderMemory, knowledge: renderKnowledge, files: renderFiles, tools: renderTools, permissions: renderPermissions, approvals: renderApprovals, security: renderSecurity, audit: renderAudit, ldcoins: renderLD, status: renderStatus, settings: renderSettings, puter: renderPuter, avatar: renderAvatarStudio, arena: renderArena, spec: renderSpec, documentation: renderDocs, profile: renderProfile, marketplace: renderMarket, automations: renderAutomations, notifications: renderNotifications, inventory: renderInventory })[id]();
 }
 function head(eyebrow, title, sub, right) {
   return `<div class="page-head"><div><p class="eyebrow">${eyebrow}</p><h1>${esc(title)}</h1><p class="page-sub">${esc(sub)}</p></div>${right || ''}</div>`;
@@ -621,6 +621,78 @@ function avatarSVG(r, size) {
 function statBar(label, v) {
   return `<div class="statbar"><span>${label}</span><div class="bar"><i style="width:${Math.min(100, v / 15 * 100)}%"></i></div><b>${v}</b></div>`;
 }
+/* ── v1.63: Automations (scheduler runtime), Notifications, Inventory ── */
+function renderAutomations() {
+  const rems = (S.reminders || []).filter(r => !r.done).sort((a, b) => a.dueTs - b.dueTs);
+  const schs = (S.schedules || []).filter(r => !r.done);
+  const span = r => r.everyMs >= 86400000 ? Math.round(r.everyMs / 86400000) + ' d' : r.everyMs >= 3600000 ? Math.round(r.everyMs / 3600000) + ' h' : r.everyMs >= 60000 ? Math.round(r.everyMs / 60000) + ' min' : Math.round(r.everyMs / 1000) + ' s';
+  $('#main').innerHTML = head('SCHEDULER RUNTIME', 'Automations', 'Server-ticked reminders and recurring schedules — fires every 15s even with the chat closed. All events are real and audited.',
+    `<span class="pill operational">RUNTIME LIVE</span>`) +
+  `<div class="stat-grid">
+    <div class="stat-card"><p class="stat-label">Recurring schedules</p><p class="stat-value">${schs.length}</p></div>
+    <div class="stat-card"><p class="stat-label">Pending reminders</p><p class="stat-value">${rems.length}</p></div>
+    <div class="stat-card"><p class="stat-label">Total fires</p><p class="stat-value">${(S.schedules || []).reduce((a, r) => a + r.fired, 0) + (S.reminders || []).filter(r => r.done).length}</p></div>
+  </div>
+  <div class="facet-card"><h4>Arm in plain language</h4>
+    <div class="input-line"><input id="autoIn" placeholder="remind me in 20 minutes stretch  ·  every 2 hours stand up"><button class="mini-btn" id="autoAdd">Arm</button></div>
+    <p class="empty-note">Same sentence works in Chat — the scheduler is a real server runtime, not a simulation.</p></div>
+  <div class="facet-card"><h4>Active schedules (${schs.length})</h4>
+    ${schs.length ? schs.map(r => `<div class="row-item"><span class="t">${esc(r.id)}</span><span class="d" title="next ${new Date(r.nextTs).toLocaleString()}">${esc(r.text)} <small class="muted">— every ${span(r)} · fired ${r.fired}× · next ${new Date(r.nextTs).toLocaleTimeString()}</small></span><button class="mini-btn danger" data-stop-sch="${r.id}">stop</button></div>`).join('') : '<p class="empty-note">No recurring schedules.</p>'}
+  </div>
+  <div class="facet-card"><h4>Pending reminders (${rems.length})</h4>
+    ${rems.length ? rems.map(r => `<div class="row-item"><span class="t">${esc(r.id)}</span><span class="d">${esc(r.text)} <small class="muted">— ${new Date(r.dueTs).toLocaleString()}</small></span></div>`).join('') : '<p class="empty-note">No pending reminders.</p>'}
+    ${rems.length ? '<div class="input-line"><button class="mini-btn danger" id="autoClearRem">Clear all reminders</button></div>' : ''}
+  </div>`;
+  $('#autoAdd').onclick = async () => {
+    const t = $('#autoIn').value.trim(); if (!t) return;
+    const j = await post('/api/command', { text: t });
+    toast((j.reply || j.error || '').split('\n')[0].slice(0, 100));
+    await refreshState(); renderAutomations();
+  };
+  $('#main').onclick = async e => {
+    const sb = e.target.closest('[data-stop-sch]');
+    if (sb) { await post('/api/command', { text: 'stop schedule ' + sb.dataset.stopSch }); toast('Schedule ' + sb.dataset.stopSch + ' stopped'); await refreshState(); renderAutomations(); return; }
+    if (e.target.closest('#autoClearRem')) { await post('/api/command', { text: 'clear reminders' }); await refreshState(); renderAutomations(); }
+  };
+}
+function renderNotifications() {
+  const items = S.notifications || [];
+  $('#main').innerHTML = head('EVENT FEED', 'Notifications', 'Real events from reminders, schedules and system ticks — newest first.',
+    `<span class="pill ${items.length ? 'config' : 'operational'}">${items.length} EVENTS</span>`) +
+  `<div class="facet-card"><h4>Feed</h4>
+    ${items.length ? items.map(n => `<div class="row-item"><span class="t">${new Date(n.ts).toLocaleTimeString()}</span><span class="d"><b class="pill ${n.kind === 'schedule' ? 'simulation' : 'config'}" style="margin-right:8px">${esc(n.kind || 'event')}</b>${esc(n.text || '')}</span></div>`).join('') : '<p class="empty-note">Nothing yet — arm a reminder or schedule to see events here.</p>'}
+  </div>
+  <div class="truth-card"><b>TRUTH BOUNDARY</b><p>Notifications are generated by the local server scheduler only. No push service, SMS or email is connected — external delivery would be labelled CONFIGURATION REQUIRED.</p></div>`;
+}
+async function renderInventory() {
+  const av = (S.avatars || [])[0];
+  if (!av) {
+    $('#main').innerHTML = head('LOOT VAULT', 'Inventory', 'Arena loot with provenance.') +
+      `<div class="facet-card"><p class="empty-note">No avatar yet — forge one in Avatar Studio first.</p></div>`;
+    return;
+  }
+  const items = av.inventory || [];
+  $('#main').innerHTML = head('LOOT VAULT', 'Inventory', `${esc(av.name)} — every item has forged/battle provenance. Sell straight to the marketplace from here.`,
+    `<button class="mini-btn" data-open-avatar>OPEN STUDIO</button>`) +
+  `<div class="stat-grid"><div class="stat-card"><p class="stat-label">Items owned</p><p class="stat-value">${items.length}</p></div>
+  <div class="stat-card"><p class="stat-label">Top rarity</p><p class="stat-value">${items.reduce((m, i) => Math.max(m, i.rlevel || 0), 0)} R</p></div>
+  <div class="stat-card"><p class="stat-label">Wallet (Owner)</p><p class="stat-value">${S.ledger && S.ledger.accounts ? S.ledger.accounts['Owner'] : 0} LD</p></div></div>
+  <div class="facet-card"><h4>Sell to marketplace</h4>
+    ${items.length ? items.map(i => `<div class="row-item"><span class="t" style="color:${i.color}">R${i.rlevel}</span><span class="d" style="color:${i.color}">${esc(i.name)} <small>(${i.slot} · ${i.rarity} · pwr ${i.power})</small></span><input class="inv-price" data-price-for="${i.id}" placeholder="LD" style="width:64px;background:rgba(6,3,10,.85);border:1px solid var(--line-hi);border-radius:8px;padding:6px 8px;color:var(--text);font-size:12px" value="100"><button class="mini-btn" data-sell="${i.id}">Sell</button></div>`).join('') : '<p class="empty-note">Empty — win battles or forge a piece.</p>'}
+  </div>
+  <div class="truth-card"><b>TRUTH BOUNDARY</b><p>Sales settle inside the labelled simulation ledger (100 LD = A$1.00 reference) until real payment rails pass the compliance gates.</p></div>`;
+  $('#main').onclick = async e => {
+    if (e.target.closest('[data-open-avatar]')) { setView('avatar'); return; }
+    const b = e.target.closest('[data-sell]');
+    if (b) {
+      const price = (document.querySelector(`[data-price-for="${b.dataset.sell}"]`) || {}).value || '100';
+      const j = await post('/api/command', { text: `sell ${b.dataset.sell} for ${price}` });
+      toast((j.reply || j.error || '').slice(0, 100));
+      await refreshState(); renderInventory();
+    }
+  };
+}
+
 async function renderAvatarStudio() {
   const [races, avs] = await Promise.all([loadRaces(), api('/api/avatars')]);
   const avatars = avs.ok ? avs.avatars : [];
@@ -661,6 +733,10 @@ async function renderAvatarStudio() {
           <div class="kv"><span>Unarmed / Destruction</span><b>${sel.skills.unarmed.level} / ${sel.skills.destruction.level}</b></div>
           <div class="kv"><span>Resists (fire/cold/shock/poison)</span><b>${race.r.join('/')}%</b></div>
           <div class="kv"><span>Racial gift</span><b>${esc(race.fl)}</b></div></div>
+        <div class="facet-card"><h4>⚒ Talents (${(sel.talents||[]).length} unlocked · ${sel.talentPoints||0} point${(sel.talentPoints||0) === 1 ? '' : 's'})</h4>
+          ${(S.talentTree || []).map(t => { const has = (sel.talents||[]).includes(t.id); const gated = (sel.talents||[]).length < t.tier - 1; const nop = !(sel.talentPoints > 0);
+            return `<div class="row-item"><span class="t">T${t.tier}</span><span class="d">${esc(t.name)} <small class="muted">${esc(t.desc)}</small></span>${has ? '<span class="pill operational">OWNED</span>' : gated || nop ? `<span class="pill config">${gated ? 'TIER-GATED' : 'NO POINTS'}</span>` : `<button class="mini-btn" data-unlock-talent="${t.id}">Unlock</button>`}</div>`; }).join('')}
+          <p class="empty-note">1 point per level — win battles in the Arena. Chat: “unlock talent body for ${esc(sel.name.toLowerCase())}”.</p></div>
         <div class="facet-card"><h4>Equipment slots</h4>${equipRows}</div>
         <div class="facet-card"><h4>Inventory (${sel.inventory.length})</h4>${invRows}
           <div class="input-line"><button class="mini-btn" data-merge-items="1">⚒ Auto-merge best triple</button></div></div>
@@ -683,6 +759,8 @@ async function renderAvatarStudio() {
     const un = e.target.closest('[data-unequip]');
     if (un) { await post(`/api/avatars/${sel.id}/unequip`, { slot: un.dataset.unequip }); renderAvatarStudio(); return; }
     if (e.target.closest('[data-view-arena]')) { setView('arena'); return; }
+    const tl = e.target.closest('[data-unlock-talent]');
+    if (tl) { const j = await post('/api/command', { text: 'unlock talent ' + tl.dataset.unlockTalent + ' for ' + sel.name.toLowerCase() }); toast((j.reply || j.error || '').slice(0, 100)); await refreshState(); renderAvatarStudio(); return; }
     const fb = e.target.closest('[data-forge]');
     if (fb) {
       const r = await post('/api/forge', { avatarId: sel.id, slot: $('#forgeSlot').value, band: $('#forgeBand').value, prompt: $('#forgePrompt').value });
@@ -892,7 +970,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.62.0 · 168-SECTION COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.63.0 · 168-SECTION COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

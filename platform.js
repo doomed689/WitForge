@@ -772,7 +772,7 @@ function selftestAll() {
   checks.push(['token issue/validate/revoke', (() => { grant('selftest.cap', 'self-test'); const v = tokenValid('selftest.cap'); revoke('selftest.cap'); return v; })()]);
   checks.push(['allowlist blocks unknown op', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ]);
   checks.push(['unbalanced ledger rejected', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok]);
-  return { version: '1.62.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
+  return { version: '1.63.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
 }
 function compliance() {
   const { SECTIONS } = require('./spec-coverage.js');
