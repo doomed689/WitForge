@@ -218,6 +218,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/economy') return json(res, 200, { ok: true, ledger: P.state.ledger, mode: P.state.economy.realMode ? 'REAL' : 'SIMULATION', realMode: P.state.economy.realMode, stripe: P.state.economy.stripeAccount });
   if (p === '/api/forge' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.forgePiece(b.avatarId, b.slot, b.prompt, b.band, b.flavor)); }
   if (p === '/api/capabilities') return json(res, 200, { ok: true, adapters: P.adaptersLive() });
+  if (p === '/api/notifications') { P.tickReminders(); return json(res, 200, { ok: true, notifications: P.state.notifications.slice(0, 20), reminders: P.state.reminders.filter(r => !r.done) }); }
   if (p === '/api/export') return json(res, 200, { ok: true, manifest: P.exportManifest() });
   if (p === '/api/import' && req.method === 'POST') { const b = await body(req); return json(res, 200, P.importManifest(b.manifest, !!b.confirm)); }
   if (p === '/api/market') { P.seedMarket(); return json(res, 200, { ok: true, listings: P.marketList() }); }
@@ -241,7 +242,7 @@ const server = http.createServer(async (req, res) => {
   if ((m = p.match(/^\/api\/avatars\/([^/]+)\/unequip$/)) && req.method === 'POST') { const b = await body(req); return json(res, 200, arena.unequip(m[1], b.slot)); }
 
   if (p === '/api/health') {
-    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.60.0', mode: 'local', time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', product: 'LIAM', version: '1.61.0', mode: 'local', time: new Date().toISOString() });
   }
 
   /* ── static files ── */
@@ -255,4 +256,5 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+setInterval(() => { try { P.tickReminders(); } catch (e) {} }, 15000);
 server.listen(PORT, '0.0.0.0', () => console.log(`LIAM control centre listening on http://0.0.0.0:${PORT}`));

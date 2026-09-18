@@ -232,6 +232,7 @@ async function routeCommand(text) {
 • Forge & market: “forge wings at legendary: <your imaginative prompt>”, “forge cost”, “market”, “buy <id>”, “sell <itemId> for <n>”, “delist <id>”
 • Real payments: “connect stripe with token sk_…”, “verify stripe”, “enable real payments confirm”, “create payment 500 ld”, “confirm payment <id>” · Proton has NO public API — never simulated
 • Connectors (live, key-free): “weather <city>”, “convert 100 aud to usd”, “research <topic>”, “dns <domain>”, “hash <text>”, “uuid”, “capabilities”
+• v1.61: “news top”, “country Australia”, “remind me in 20 minutes stretch”, “reminders”, “github list”, “github read file README.md”, “github write notes.md | hello” (approval-gated)
 • Preview & autonomy: “preview fetch <url>”, “autonomous on confirm”, “autonomous off”
 • Optional external: “ask puter <question>” (only if the Puter bridge loads; output labelled untrusted)` };
   if ((m = low.match(/^(?:create|make)(?: an?)? owner(?: account)?(?: called| named)? ([a-z0-9_-]+) (?:with )?password (.+)$/))) {
@@ -861,6 +862,24 @@ probeHealth(); setInterval(probeHealth, 8000);
 window.addEventListener('online', refreshStatus);
 window.addEventListener('offline', refreshStatus);
 
+/* ── reminder/notification poller ───────────────────────── */
+let lastNotifTs = Date.now();
+async function pollNotifications() {
+  if (OFFLINE) return;
+  const j = await api('/api/notifications');
+  if (!j.ok || !j.notifications) return;
+  const newest = j.notifications.filter(n => n.ts > lastNotifTs);
+  lastNotifTs = Math.max(lastNotifTs, ...j.notifications.map(n => n.ts), 0);
+  if (newest.length === 0) return;
+  newest.reverse().forEach(n => {
+    toast('⏰ Reminder: ' + (n.text || '').slice(0, 80));
+    const log = $('#chatLog');
+    if (log) log.insertAdjacentHTML('beforeend', `<div class="msg notice"><div class="who">REMINDER</div><p>${esc(n.text || '')}</p></div>`);
+  });
+  if (S && $('#chatLog')) { const c = S.conversations.find(x => x.id === chatConvoId); if (c) $('#chatLog').scrollTop = $('#chatLog').scrollHeight; }
+}
+setInterval(pollNotifications, 10000);
+
 /* ── Collapse / mobile ───────────────────────────────────────────── */
 function toggleCollapse() {
   if (window.innerWidth <= 960) { document.body.classList.toggle('sidebar-open'); return; }
@@ -872,7 +891,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.60.0 · 168-SECTION COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.61.0 · 168-SECTION COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

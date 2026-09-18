@@ -24,6 +24,15 @@ node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market,
 node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
 ```
 
+## v1.61 — scheduler, repo file-ops, more live connectors
+
+- **Reminder/notification system**: `remind me in 20 minutes stretch` schedules server-side reminders that tick every 15s even with the chat closed; due reminders become notifications, surfaced in the UI via toast + chat notice (10s poller, watermark-guarded). `reminders` / `clear reminders` intents.
+- **GitHub file-ops from chat** (through the LIVE adapter, real Contents API): `github list [path]`, `github read file <path>`, and high-risk `github write <path> | <content>` — approval-gated, SSRF-guarded, audited; shipped end-to-end proof (commit 502dcf23).
+- **Approval pipeline completion (bugfix)**: `approve <id>` now actually grants the capability it approved — high-risk commands previously re-queued forever after approval.
+- **Hacker News connector**: `news top [n]` via the official API. **Countries connector**: `country <name>` via countries.dev (REST Countries v3.1 deprecated in 2026 and v5 is key-gated — adapter renamed truthfully).
+- **Adapters: 18 → 20**; `/api/notifications` endpoint; intent reorder so connector commands beat the broad `status` matcher.
+- Tests: platform 71 → **81** (reminder lifecycle, approve-grants-capability, truthful github states). Arena 20, smoke 45 unchanged — all green.
+
 ## v1.60 — UI overhaul (ground-up design system)
 
 - **Ground-up visual system rebuilt (`styles.css` rewritten ~10×)**: design tokens (surfaces, lines, elevations, radii, type/mono stacks, accent gradients), ambient scene (violet orbs + blueprint grid, fixed-layer pseudo elements), consistent 12–24px radius/9–70px shadow scales.

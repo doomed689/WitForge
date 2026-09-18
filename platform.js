@@ -32,6 +32,7 @@ function freshState() {
     owner: null, sessions: {}, evidence: [], legal: seedLegal(),
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
+    reminders: [], notifications: [],
     seq: 1
   };
 }
@@ -130,7 +131,8 @@ function decideApproval(id, decision) {
   if (ap.status !== 'pending') return { ok: false, error: 'Already decided' };
   ap.status = decision === 'approve' ? 'approved' : 'stopped';
   ap.decided = Date.now();
-  audit('approval', `Approval ${ap.id} ${ap.status} by user`, 'user');
+  if (decision === 'approve' && ap.cap) grant(ap.cap, 'approved ' + ap.id + ' by user');
+  audit('approval', `Approval ${ap.id} ${ap.status} by user${decision === 'approve' && ap.cap ? ' — capability ' + ap.cap + ' granted' : ''}`, 'user');
   save();
   return { ok: true, approval: ap };
 }
@@ -145,7 +147,9 @@ const ADAPTERS = [
   { id: 'exec', name: 'Allowlisted Executor', caps: [{ id: 'exec.run', risk: 'medium', desc: 'Bounded, shell:false allowlisted operations with timeouts and output caps' }], state: 'AVAILABLE' },
   { id: 'economy', name: 'LD Ledger (simulation)', caps: [{ id: 'economy.manage', risk: 'medium', desc: 'Double-entry simulation ledger; 100 LD = A$1.00 reference' }], state: 'AVAILABLE' },
   { id: 'arena', name: 'Arena Engine', caps: [{ id: 'arena.fight', risk: 'low', desc: 'Server-authoritative battles' }], state: 'AVAILABLE' },
-  { id: 'github', name: 'GitHub REST', caps: [{ id: 'github.read', risk: 'medium', desc: 'Real GitHub API reads when GITHUB_TOKEN is configured' }], state: process.env.GITHUB_TOKEN ? 'CONFIGURED_UNVERIFIED' : 'UNAVAILABLE' },
+  { id: 'github', name: 'GitHub REST', caps: [{ id: 'github.read', risk: 'medium', desc: 'Real GitHub API reads when a token is configured' }, { id: 'github.write', risk: 'high', desc: 'Real repo file create/update via Contents API (approval-gated)' }], state: 'UNAVAILABLE' },
+  { id: 'hackernews', name: 'Hacker News Official API', caps: [{ id: 'hn.read', risk: 'low', desc: 'Real top stories via the official Firebase-backed HN API (no key required)' }], state: 'AVAILABLE' },
+  { id: 'countries', name: 'Countries (countries.dev)', caps: [{ id: 'country.read', risk: 'low', desc: 'Real country facts via countries.dev (keyless; REST Countries v3.1 deprecated in 2026, v5 needs a paid-tier key)' }], state: 'AVAILABLE' },
   { id: 'puter', name: 'Puter.js Bridge', caps: [{ id: 'puter.ai', risk: 'medium', desc: 'Live model discovery/chat in the browser when Puter.js loads' }], state: 'EXTERNAL (browser-reported)' },
   { id: 'stripe', name: 'Stripe Payments', caps: [{ id: 'stripe.manage', risk: 'medium', desc: 'Real Stripe account verification, checkout sessions and paid-status evidence' }], state: 'UNAVAILABLE' },
   { id: 'proton', name: 'Proton Wallet', caps: [{ id: 'proton.pay', risk: 'high', desc: 'Proton publishes no public payment/wallet merchant API' }], state: 'NO PUBLIC API' },
@@ -283,7 +287,141 @@ const TOOLS = {
       if (a.decode) { try { return { decoded: Buffer.from(String(a.text || ''), 'base64').toString('utf8').slice(0, 5000) }; } catch (e) { return { error: 'Invalid base64' }; } }
       return { encoded: Buffer.from(String(a.text || ''), 'utf8').toString('base64') };
     } },
-  'util.time': { cap: 'util.run', risk: 'low', run: () => { const d = new Date(); return { iso: d.toISOString(), utc: d.toUTCString(), epoch: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }; } }
+  'util.time': { cap: 'util.run', risk: 'low', run: () => { const d = new Date(); return { iso: d.toISOString(), utc: d.toUTCString(), epoch: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone   ,
+  /* ── v1.61: more real key-free connectors ────────────────────── */
+  'hn.top': { cap: 'hn.read', risk: 'low', run: async a => {
+      const n = Math.min(10, Math.max(1, Number(a.count) || 5));
+      const r = await guardedFetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+      if (!r.ok) return r;
+      let ids; try { ids = JSON.parse(r.text); } catch (e) { return { error: 'Bad HN response' }; }
+      const stories = [];
+      for (const id of ids.slice(0, n)) {
+        const it = await guardedFetch('https://hacker-news.firebaseio.com/v0/item/' + id + '.json');
+        if (it.ok) { try { const j = JSON.parse(it.text); stories.push({ title: j.title, by: j.by, score: j.score, url: j.url || ('https://news.ycombinator.com/item?id=' + id) }); } catch (e) {} }
+      }
+      return { count: stories.length, stories, source: 'Hacker News official API (real)' };
+    } },
+  'country.get': { cap: 'country.read', risk: 'low', run: async a => {
+      const name = String(a.name || '').trim().slice(0, 60); if (!name) return { error: 'country name required' };
+      const r = await guardedFetch('https://countries.dev/name/' + encodeURIComponent(name));
+      if (!r.ok) return { error: 'No country data found for “' + name + '” (' + (r.error || 'HTTP ' + r.status) + ')', truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad country response' }; }
+      const c = Array.isArray(j) ? j[0] : j; if (!c || !c.area) return { error: 'No country found for “' + name + '”', truthful: true };
+      return { name: c.name, flag: c.flag, capital: c.capital || '—', population: c.population, region: c.region, area: c.area,
+        currencies: (c.currencies || []).map(x => x.name + (x.symbol ? ' (' + x.symbol + ')' : '')).slice(0, 3),
+        languages: (c.languages || []).map(x => x.name).slice(0, 6), source: 'countries.dev (real, keyless)' };
+    } },
+  /* ── v1.61: GitHub repo file-ops through the live adapter ────── */
+  'github.files': { cap: 'github.read', risk: 'medium', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential. Say “connect github with token …”.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 80);
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
+        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
+      if (!r.ok) return { error: 'GitHub list failed (HTTP ' + r.status + ')' , truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
+      if (!Array.isArray(j)) return { error: 'Path is a file, not a directory', truthful: true };
+      return { path: sub || '/', files: j.slice(0, 60).map(f => ({ name: f.name, type: f.type, size: f.size, path: f.path })) };
+    } },
+  'github.readfile': { cap: 'github.read', risk: 'medium', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
+      if (!sub) return { error: 'file path required' };
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
+        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
+      if (!r.ok) return { error: 'GitHub read failed (HTTP ' + r.status + ')', truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
+      if (!j.content) return { error: 'Not a file (or too large)', truthful: true };
+      const text = Buffer.from(String(j.content).replace(/\n/g, ''), 'base64').toString('utf8');
+      return { path: j.path, bytes: j.size, sha: j.sha.slice(0, 8), text: text.slice(0, 4000), truncated: text.length > 4000 };
+    } },
+  'github.writefile': { cap: 'github.write', risk: 'high', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
+      const body = String(a.content || '');
+      if (!sub || !body) return { error: 'path and content required' };
+      if (body.length > 10000) return { error: 'content capped at 10KB' };
+      const hdr = { authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM', 'content-type': 'application/json' };
+      let sha; const ex = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr);
+      if (ex.ok) { try { sha = JSON.parse(ex.text).sha; } catch (e) {} }
+      const payload = { message: 'LIAM: ' + (sha ? 'update' : 'create') + ' ' + sub, content: Buffer.from(body, 'utf8').toString('base64'), branch: 'main' };
+      if (sha) payload.sha = sha;
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr, { method: 'PUT', body: JSON.stringify(payload) });
+      let j; try { j = JSON.parse(r.text || '{}'); } catch (e) { j = null; }
+      if (!j || !j.content) return { error: 'GitHub write failed (' + (r.status ? 'HTTP ' + r.status : (r.error || 'network error')) + (j && j.message ? ': ' + j.message : '') + ')', truthful: true };
+      audit('tool', 'GITHUB WRITE ' + j.content.path + ' @main', 'user'); save();
+      return { path: j.content.path, sha: j.content.sha.slice(0, 8), commit: j.commit && j.commit.sha && j.commit.sha.slice(0, 8), url: j.content.html_url };
+    } }
+}; } }
+  ,
+  /* ── v1.61: more real key-free connectors ────────────────────── */
+  'hn.top': { cap: 'hn.read', risk: 'low', run: async a => {
+      const n = Math.min(10, Math.max(1, Number(a.count) || 5));
+      const r = await guardedFetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+      if (!r.ok) return r;
+      let ids; try { ids = JSON.parse(r.text); } catch (e) { return { error: 'Bad HN response' }; }
+      const stories = [];
+      for (const id of ids.slice(0, n)) {
+        const it = await guardedFetch('https://hacker-news.firebaseio.com/v0/item/' + id + '.json');
+        if (it.ok) { try { const j = JSON.parse(it.text); stories.push({ title: j.title, by: j.by, score: j.score, url: j.url || ('https://news.ycombinator.com/item?id=' + id) }); } catch (e) {} }
+      }
+      return { count: stories.length, stories, source: 'Hacker News official API (real)' };
+    } },
+  'country.get': { cap: 'country.read', risk: 'low', run: async a => {
+      const name = String(a.name || '').trim().slice(0, 60); if (!name) return { error: 'country name required' };
+      const r = await guardedFetch('https://countries.dev/name/' + encodeURIComponent(name));
+      if (!r.ok) return { error: 'No country data found for “' + name + '” (' + (r.error || 'HTTP ' + r.status) + ')', truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad country response' }; }
+      const c = Array.isArray(j) ? j[0] : j; if (!c || !c.area) return { error: 'No country found for “' + name + '”', truthful: true };
+      return { name: c.name, flag: c.flag, capital: c.capital || '—', population: c.population, region: c.region, area: c.area,
+        currencies: (c.currencies || []).map(x => x.name + (x.symbol ? ' (' + x.symbol + ')' : '')).slice(0, 3),
+        languages: (c.languages || []).map(x => x.name).slice(0, 6), source: 'countries.dev (real, keyless)' };
+    } },
+  /* ── v1.61: GitHub repo file-ops through the live adapter ────── */
+  'github.files': { cap: 'github.read', risk: 'medium', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential. Say “connect github with token …”.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 80);
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
+        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
+      if (!r.ok) return { error: 'GitHub list failed (HTTP ' + r.status + ')' , truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
+      if (!Array.isArray(j)) return { error: 'Path is a file, not a directory', truthful: true };
+      return { path: sub || '/', files: j.slice(0, 60).map(f => ({ name: f.name, type: f.type, size: f.size, path: f.path })) };
+    } },
+  'github.readfile': { cap: 'github.read', risk: 'medium', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
+      if (!sub) return { error: 'file path required' };
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
+        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
+      if (!r.ok) return { error: 'GitHub read failed (HTTP ' + r.status + ')', truthful: true };
+      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
+      if (!j.content) return { error: 'Not a file (or too large)', truthful: true };
+      const text = Buffer.from(String(j.content).replace(/\n/g, ''), 'base64').toString('utf8');
+      return { path: j.path, bytes: j.size, sha: j.sha.slice(0, 8), text: text.slice(0, 4000), truncated: text.length > 4000 };
+    } },
+  'github.writefile': { cap: 'github.write', risk: 'high', run: async a => {
+      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
+      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
+      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
+      const body = String(a.content || '');
+      if (!sub || !body) return { error: 'path and content required' };
+      if (body.length > 10000) return { error: 'content capped at 10KB' };
+      const hdr = { authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM', 'content-type': 'application/json' };
+      let sha; const ex = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr);
+      if (ex.ok) { try { sha = JSON.parse(ex.text).sha; } catch (e) {} }
+      const payload = { message: 'LIAM: ' + (sha ? 'update' : 'create') + ' ' + sub, content: Buffer.from(body, 'utf8').toString('base64'), branch: 'main' };
+      if (sha) payload.sha = sha;
+      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr, { method: 'PUT', body: JSON.stringify(payload) });
+      let j; try { j = JSON.parse(r.text || '{}'); } catch (e) { j = null; }
+      if (!j || !j.content) return { error: 'GitHub write failed (' + (r.status ? 'HTTP ' + r.status : (r.error || 'network error')) + (j && j.message ? ': ' + j.message : '') + ')', truthful: true };
+      audit('tool', 'GITHUB WRITE ' + j.content.path + ' @main', 'user'); save();
+      return { path: j.content.path, sha: j.content.sha.slice(0, 8), commit: j.commit && j.commit.sha && j.commit.sha.slice(0, 8), url: j.content.html_url };
+    } }
 };
 
 /* ── Economy: balanced double-entry, simulation-labelled ─ */
@@ -413,6 +551,27 @@ async function command(text) {
   if ((m = low.match(/^grant ([\w.]+)/)) ) { grant(m[1]); return R('Permission granted: ' + m[1] + ' (granted by your request, audited).'); }
   if ((m = low.match(/^revoke ([\w.]+)/))) { revoke(m[1]); return R('Permission revoked: ' + m[1]); }
 
+  /* v1.61: reminders */
+  if ((m = low.match(/^remind me in (\d+) (seconds?|minutes?|hours?|days?) (?:to )?(.+)$/))) {
+    const unit = { second: 1e3, minute: 6e4, hour: 36e5, day: 864e5 }[m[2].replace(/s$/, '')];
+    const r = addReminder(m[3], Date.now() + Number(m[1]) * unit);
+    return R(`Reminder ${r.id} set — “${m[3]}” in ${m[1]} ${m[2].replace(/s?$/, '(s)')}. It will fire even if your chat is closed (server keeps ticking).`);
+  }
+  if (low === 'reminders' || low === 'list reminders') {
+    const p = S.reminders.filter(r => !r.done).sort((a, b) => a.dueTs - b.dueTs);
+    return R(p.length ? 'Pending reminders:\n' + p.map(r => `• ${r.id} — ${new Date(r.dueTs).toLocaleString()} — ${r.text}`).join('\n') : 'No pending reminders. Say “remind me in 20 minutes stretch”.');
+  }
+  if (low === 'clear reminders') { const n = S.reminders.filter(r => !r.done).length; S.reminders.forEach(r => r.done = true); audit('tool', n + ' reminders cleared', 'user'); save(); return R(`Cleared ${n} pending reminder(s).`); }
+  /* v1.61: Hacker News + countries + GitHub file-ops */
+  if ((m = low.match(/^(?:news|hn) top(?: (\d+))?$/))) { const r = await runTool('hn.top', { count: m[1] || 5 }, {}); return r.ok ? R('Top Hacker News:\n' + r.evidence.stories.map((x, i) => `${i + 1}. ${x.title} (${x.score}pts, ${x.by})\n   ${x.url}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^country (.+)$/))) { const r = await runTool('country.get', { name: m[1] }, {}); return r.ok ? R(`${r.evidence.flag || ''} ${r.evidence.name}: capital ${r.evidence.capital} · pop ${Number(r.evidence.population).toLocaleString()} · ${r.evidence.region} · ${r.evidence.currencies.join(', ') || '—'} · ${r.evidence.languages.join(', ') || '—'}.`) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^github (?:list|ls)(?: files)?(?: (.*))?$/))) { const r = await runTool('github.files', { path: m[1] || '' }, {}); return r.ok ? R(`doomed689/WitForge ${r.evidence.path}:\n` + r.evidence.files.map(f => `${f.type === 'dir' ? '📁' : '📄'} ${f.name}${f.type !== 'dir' ? ' (' + f.size + 'B)' : ''}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^github read (?:file )?(.+)$/))) { const r = await runTool('github.readfile', { path: m[1] }, {}); return r.ok ? R(`${r.evidence.path} (${r.evidence.bytes}B, sha ${r.evidence.sha}):\n${r.evidence.text}${r.evidence.truncated ? '\n…(truncated)' : ''}`) : R((r.evidence && r.evidence.error) || r.error); }
+  if ((m = low.match(/^github write ([^|]+)\|([\s\S]+)$/))) {
+    const r = await runTool('github.writefile', { path: m[1].trim(), content: m[2].trim() }, { confirmed: low.includes('confirm') });
+    if (r.needsApproval) return R('GitHub write is high-risk — approval queued: ' + r.needsApproval + '. Say “approve ' + r.needsApproval + '” then repeat the command.');
+    return r.ok ? R(`GitHub wrote ${r.evidence.path} → main (commit ${r.evidence.commit}). Real API write, audited.`) : R((r.evidence && r.evidence.error) || r.error);
+  }
   if (low.includes('status') || low.includes('health')) {
     return R(`Systems: emergency=${S.emergency}; adapters=${ADAPTERS.filter(a => a.state === 'AVAILABLE').length} available / ${ADAPTERS.filter(a => a.state === 'UNAVAILABLE').length} unavailable; conversations=${S.conversations.length}; tasks=${S.tasks.length}; audit=${S.audit.length}; ledger mode=SIMULATION.`);
   }
@@ -579,7 +738,7 @@ function selftestAll() {
   checks.push(['token issue/validate/revoke', (() => { grant('selftest.cap', 'self-test'); const v = tokenValid('selftest.cap'); revoke('selftest.cap'); return v; })()]);
   checks.push(['allowlist blocks unknown op', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ]);
   checks.push(['unbalanced ledger rejected', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok]);
-  return { version: '1.60.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
+  return { version: '1.61.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
 }
 function compliance() {
   const { SECTIONS } = require('./spec-coverage.js');
@@ -726,6 +885,30 @@ function setRealMode(on, confirmed) {
   return { ok: true, realMode: S.economy.realMode };
 }
 
+/* ── v1.61: reminders (server-ticked, audited) ───────────────────── */
+function addReminder(text, dueTs) {
+  const r = { id: 'r-' + crypto.randomBytes(4).toString('hex'), text: String(text).slice(0, 200), dueTs: Number(dueTs), done: false, createdTs: Date.now() };
+  S.reminders.push(r);
+  if (S.reminders.length > 60) S.reminders = S.reminders.slice(-60);
+  audit('tool', 'REMINDER ' + r.id + ' due ' + new Date(r.dueTs).toISOString() + ': ' + r.text.slice(0, 60), 'user');
+  save();
+  return r;
+}
+function tickReminders() {
+  const now = Date.now(); let fired = 0;
+  for (const r of S.reminders) {
+    if (!r.done && r.dueTs <= now) {
+      r.done = true; fired++;
+      S.notifications.unshift({ ts: now, kind: 'reminder', text: r.text });
+    }
+  }
+  if (fired) {
+    if (S.notifications.length > 100) S.notifications.length = 100;
+    audit('tool', fired + ' reminder(s) fired', 'system'); save();
+  }
+  return fired;
+}
+
 /* ── v1.59: export / import manifests (truthful, audited) ───────── */
 function exportManifest() {
   const m = { format: 'liam.export', version: '1.59.0', exportedAt: new Date().toISOString(),
@@ -761,5 +944,6 @@ module.exports = {
   verifyAudit, withCid, tokenValid,
   createOwner, login, logout, sessionValid,
   selftestAll, compliance, freshState,
-  exportManifest, importManifest
+  exportManifest, importManifest,
+  addReminder, tickReminders
 };
