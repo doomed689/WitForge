@@ -237,6 +237,33 @@ const server = http.createServer(async (req, res) => {
     const r = P.setCredential(id, String(b.token || '').trim());
     return json(res, 200, Object.assign(r, r.ok ? { reply: 'Credential for ' + id + ' stored encrypted. Verify it to prove it works — configuration alone never counts as connected.' } : {}));
   }
+  /* ── v1.77: official OAuth sign-in — the user authenticates on the
+   * platform's own page; the callback hands the code back to this server,
+   * which exchanges it server-side (client secrets never leave). */
+  const oauthBase = rq => {
+    const h = rq.headers.host || ('127.0.0.1:' + PORT);
+    const proto = rq.headers['x-forwarded-proto'] || (/^(localhost|127\.|\[::1\])/.test(h) ? 'http' : 'https');
+    return proto + '://' + h;
+  };
+  if (p === '/api/oauth') {
+    if (req.method === 'GET') return json(res, 200, { ok: true, providers: P.oauthStatusList(), callbackUrl: oauthBase(req) + '/api/oauth/callback' });
+    const b = await body(req);
+    const id = String(b.id || '').toLowerCase().slice(0, 24);
+    if (b.action === 'register') return json(res, 200, P.oauthSetApp(id, b.clientId, b.clientSecret));
+    if (b.action === 'forget') return json(res, 200, P.oauthForgetApp(id));
+    if (b.action === 'start') return json(res, 200, P.oauthStart(id, oauthBase(req) + '/api/oauth/callback'));
+    if (b.action === 'exchange') return json(res, 200, await P.oauthExchange(id, { code: b.code, state: b.state || null, redirectUri: oauthBase(req) + '/api/oauth/callback' }));
+    return json(res, 200, { ok: false, error: 'action required: register | forget | start | exchange' });
+  }
+  if (p === '/api/oauth/callback' && req.method === 'GET') {
+    const q2 = Object.fromEntries(url.searchParams);
+    const r = await P.oauthExchange(String(q2.id || q2.provider || ''), { code: q2.code || '', state: q2.state || null });
+    res.writeHead(r.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end('<!doctype html><meta charset="utf-8"><title>WitForge — official sign-in</title><body style="font-family:system-ui;background:#0b0e14;color:#e6e9f0;display:grid;place-items:center;min-height:100vh;margin:0"><div style="max-width:520px;padding:24px;border:1px solid #2a3142;border-radius:12px">'
+      + '<h2 style="margin:0 0 8px">' + (r.ok ? '✓ Sign-in complete' : '✗ Sign-in failed') + '</h2>'
+      + '<p style="color:#9aa3b7;line-height:1.5">' + (r.ok ? String(r.name || '') + ' account token is stored (AES-256-GCM). Back in WitForge, press “verify ' + String(r.provider || '') + '” to prove it with a real API call. Your password never touched WitForge — it stayed on the platform\u2019s page, exactly as designed.' : String(r.error || 'unknown error')) + '</p>'
+      + '<p style="color:#5b6478;font-size:13px">You can close this tab.</p></div></body>');
+  }
   if (p === '/api/plans') {
     if (req.method === 'GET') return json(res, 200, { ok: true, plans: services.PLANS, current: services.currentSubscription(P.state) });
     const b = await body(req);

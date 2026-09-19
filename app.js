@@ -555,7 +555,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.76.1'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.77.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -736,20 +736,61 @@ const CRED_CATALOG = [
   { g: 'CORE', id: 'stripe', name: 'Stripe', portal: 'dashboard.stripe.com/apikeys', portalUrl: 'https://dashboard.stripe.com/apikeys', steps: 'Developers → API keys → a restricted key (rk_…) is recommended — least privilege. Verification + evidence only: real money stays compliance-locked (Charter art. IV).', ph: 'rk_live_… / sk_…' }
 ];
 async function renderCredentials() {
-  const j = await api('/api/credentials');
+  const [j, oj] = await Promise.all([api('/api/credentials'), api('/api/oauth')]);
   const stored = new Set((j.credentials || []).map(c => c.service));
   const adState = {}; (j.adapters || []).forEach(a => { adState[a.id] = String(a.state || ''); });
+  const oa = {}; (oj.providers || []).forEach(x => { oa[x.id] = x; });
+  const callbackUrl = oj.callbackUrl || '…/api/oauth/callback';
+  /* v1.77: official sign-in — user authenticates on the platform's page; the
+   * password never touches WitForge. Paste-a-bearer-token stays available for
+   * developers; OAuth is the familiar path for everyone else. */
+  const oauthBlock = c => {
+    const s = oa[c.id]; if (!s) return '';
+    if (!s.configured) return `<div style="margin-top:8px;padding:8px;border:1px dashed #3a4360;border-radius:8px">
+       <b>🔐 Official sign-in</b> <span class="pill config">SETUP REQUIRED</span>
+       <p class="empty-note">Register a developer app — ${esc(s.portal)}. Redirect/callback URL to register there: <code>${esc(callbackUrl)}</code></p>
+       <div class="input-line"><input id="oa-id-${c.id}" placeholder="client id" style="flex:1;min-width:140px"><input id="oa-sc-${c.id}" type="password" placeholder="client secret (if issued)" autocomplete="off" style="flex:1;min-width:140px"><button class="mini-btn" data-oa-act="register" data-cr="${c.id}">Save app</button></div></div>`;
+    return `<div style="margin-top:8px;padding:8px;border:1px solid #2e7d5b;border-radius:8px">
+       <b>🔐 Official sign-in</b> <span class="pill operational">APP REGISTERED</span>
+       <p class="empty-note">You log in on ${esc(c.name)}'s own page — your password never touches WitForge. The callback lands back here automatically.</p>
+       <div class="input-line"><button class="mini-btn" data-oa-act="start" data-cr="${c.id}">Sign in with ${esc(c.name)}</button><button class="mini-btn danger" data-oa-act="forget" data-cr="${c.id}">Forget app</button>
+       <input id="oa-code-${c.id}" placeholder="…or paste code" style="width:130px"><button class="mini-btn" data-oa-act="exchange" data-cr="${c.id}">Exchange</button></div></div>`;
+  };
   const pill = c => !stored.has(c.id) ? '<span class="pill disconnected">NO KEY</span>'
     : adState[c.id].startsWith('VERIFIED') ? '<span class="pill operational">VERIFIED</span>'
     : '<span class="pill config">KEY STORED · unverified</span>';
   const card = c => `<div class="facet-card"><h4>🔑 ${esc(c.name)} <small>[${c.id}]</small> ${pill(c)}</h4>
      <p class="empty-note">${esc(c.steps)} → <a href="${c.portalUrl}" target="_blank" rel="noopener">${esc(c.portal)} ↗</a>${c.risk ? ' · <b>' + esc(c.risk) + '</b>' : ''}</p>
+     ${c.g === 'SOCIAL' ? oauthBlock(c) : ''}
      <div class="input-line" style="margin-top:8px"><input type="password" id="cr-${c.id}" placeholder="${esc(c.ph)}" autocomplete="off" style="flex:1;min-width:180px"><button class="mini-btn" data-cr-act="connect" data-cr="${c.id}">Connect</button><button class="mini-btn" data-cr-act="verify" data-cr="${c.id}" ${stored.has(c.id) ? '' : 'disabled'}>Verify</button><button class="mini-btn danger" data-cr-act="revoke" data-cr="${c.id}" ${stored.has(c.id) ? '' : 'disabled'}>Revoke</button></div>
      <div class="empty-note" id="cr-out-${c.id}" style="margin-top:6px"></div></div>`;
   $('#main').innerHTML = head('CREDENTIALS', 'Credentials — connections & API keys', 'Keys are stored AES-256-GCM encrypted on this server, are never returned by any API, and are sent only to the service they belong to. Connecting proves nothing — Verify proves it with a real round trip and recorded evidence.', `<span class="pill operational">${stored.size} stored</span>`) +
     `<div class="facet-card"><h4>Charter art. III §3 — informed consent</h4><p class="empty-note">Every key here is owner-granted and revocable in one click (“disconnect &lt;id&gt;” also works in Chat, as do “connect &lt;id&gt; with token &lt;key&gt;” and “verify &lt;id&gt;”). Ollama needs no key: install it and “ollama pull llama3.2”.</p></div>` +
     ['AI BRAIN', 'SOCIAL', 'CORE'].map(g => `<h4 style="margin:18px 0 8px">${g}</h4>` + CRED_CATALOG.filter(c => c.g === g).map(card).join('')).join('');
   $('#main').onclick = async e => {
+    const ob = e.target.closest('[data-oa-act]');
+    if (ob) {
+      const id = ob.dataset.cr, act = ob.dataset.oaAct, out = document.getElementById('cr-out-' + id);
+      if (act === 'register') {
+        const cid = (document.getElementById('oa-id-' + id).value || '').trim(), cs = (document.getElementById('oa-sc-' + id).value || '').trim();
+        const r = await api('/api/oauth', { method: 'POST', body: { action: 'register', id, clientId: cid, clientSecret: cs } });
+        toast(r.ok ? 'OAuth app saved: ' + id : (r.error || 'failed')); setView('credentials', { silent: true });
+      } else if (act === 'forget') {
+        const r = await api('/api/oauth', { method: 'POST', body: { action: 'forget', id } });
+        toast(r.ok ? 'OAuth app removed: ' + id : (r.error || 'failed')); setView('credentials', { silent: true });
+      } else if (act === 'start') {
+        const r = await api('/api/oauth', { method: 'POST', body: { action: 'start', id } });
+        if (r.ok === false || r.error) { if (out) out.textContent = r.error || 'failed'; return; }
+        if (out) out.textContent = 'Opened the official ' + id + ' sign-in — finish it there; the token stores itself on return (callback).';
+        window.open(r.url, '_blank', 'noopener');
+      } else if (act === 'exchange') {
+        const code = (document.getElementById('oa-code-' + id).value || '').trim();
+        const r = await api('/api/oauth', { method: 'POST', body: { action: 'exchange', id, code } });
+        if (out) out.textContent = r.ok ? (r.note || 'Token stored') : (r.error || 'failed');
+        if (r.ok) setView('credentials', { silent: true });
+      }
+      return;
+    }
     const b = e.target.closest('[data-cr-act]'); if (!b) return;
     const id = b.dataset.cr, act = b.dataset.crAct, out = document.getElementById('cr-out-' + id);
     if (act === 'connect') {
@@ -1308,7 +1349,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.76.1 · 176-REQUIREMENT COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.77.0 · 176-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.76.1';
+const VERSION = '1.77.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -105,6 +105,8 @@ Object.assign(S, Object.assign(freshState(), S)); // backfill new fields on old 
 S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }, S.economy);
 S.market = S.market || [];
 S.social = Object.assign({ verified: {} }, S.social);
+S.oauthApps = S.oauthApps || {};       // v1.77 registered developer apps (client id + encrypted secret)
+S.oauthPending = S.oauthPending || {}; // v1.77 in-flight sign-in states (single-use, 10 min TTL)
 S.proposals = S.proposals || [];
 S.adCampaigns = S.adCampaigns || [];
 /* LD pools are explicit ledger accounts: a reward can only be paid from a pool
@@ -567,7 +569,7 @@ async function guardedFetch(url, headers, opts) {
   const t = setTimeout(() => ctl.abort(), 8000);
   try {
     const r = await fetch(u, { signal: ctl.signal, redirect: 'manual', method: opts.method || 'GET', body: opts.body || undefined, headers: Object.assign({ 'user-agent': 'LIAM-guarded-http/1.55' }, headers || {}) });
-    /* v1.76.1: redirects are still never followed, but they are no longer
+    /* v1.77.0: redirects are still never followed, but they are no longer
      * confused with genuine 4xx/5xx answers — the status travels back so the
      * caller can tell the user the truth (“HTTP 404”, not “HTTP undefined”).
      * opts.maxBytes raises the 20KB body cap for connectors whose valid JSON
@@ -728,7 +730,7 @@ const TOOLS = {
       if (!sub) return { error: 'file path required' };
       const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
         authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' }, { maxBytes: 500000 });
-      /* v1.76.1: report the true failure (HTTP 404 on a wrong-cased path, a
+      /* v1.77.0: report the true failure (HTTP 404 on a wrong-cased path, a
        * network error, …) — never the meaningless “HTTP undefined”. */
       if (!r.ok) return { error: 'GitHub read failed — ' + (r.error || ('HTTP ' + r.status)), truthful: true };
       let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
@@ -852,7 +854,7 @@ const TOOLS = {
       const p = llmResolveProvider(a.provider);
       if (!p) return { error: 'Nothing to verify yet — say “connect <provider> with token <key>” first (groq/gemini/openrouter/deepseek/mistral are free-tier; ollama needs no key).', truthful: true };
       if (p.error) return p;
-      /* v1.76.1: 64 output tokens, not 8 — thinking models (gemini-3.x) spend
+      /* v1.77.0: 64 output tokens, not 8 — thinking models (gemini-3.x) spend
        * output tokens on reasoning before any text arrives, so an 8-token
        * probe returned an empty answer and a false FAILED. */
       const r = await llm.chat(p.id, { prompt: 'Reply with the single word: ready', maxTokens: 64, temperature: 0 }, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
@@ -1924,7 +1926,7 @@ async function command(text) {
   if ((m = low.match(/^(?:news|hn) top(?: (\d+))?$/))) { const r = await runTool('hn.top', { count: m[1] || 5 }, {}); return r.ok ? R('Top Hacker News:\n' + r.evidence.stories.map((x, i) => `${i + 1}. ${x.title} (${x.score}pts, ${x.by})\n   ${x.url}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = low.match(/^country (.+)$/))) { const r = await runTool('country.get', { name: m[1] }, {}); return r.ok ? R(`${r.evidence.flag || ''} ${r.evidence.name}: capital ${r.evidence.capital} · pop ${Number(r.evidence.population).toLocaleString()} · ${r.evidence.region} · ${r.evidence.currencies.join(', ') || '—'} · ${r.evidence.languages.join(', ') || '—'}.`) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = q.match(/^github (?:list|ls)(?: files)?(?: (.*))?$/i))) { const r = await runTool('github.files', { path: m[1] || '' }, {}); return r.ok ? R(`doomed689/WitForge ${r.evidence.path}:\n` + r.evidence.files.map(f => `${f.type === 'dir' ? '📁' : '📄'} ${f.name}${f.type !== 'dir' ? ' (' + f.size + 'B)' : ''}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
-  /* v1.76.1: paths keep the owner's original case (q, not low) — the GitHub
+  /* v1.77.0: paths keep the owner's original case (q, not low) — the GitHub
    * Contents API is case-sensitive, and lowercasing “STATUS.md” was a
    * guaranteed 404. */
   if ((m = q.match(/^github read (?:file )?(.+)$/i))) { const r = await runTool('github.readfile', { path: m[1] }, {}); return r.ok ? R(`${r.evidence.path} (${r.evidence.bytes}B, sha ${r.evidence.sha}):\n${r.evidence.text}${r.evidence.truncated ? '\n…(truncated)' : ''}`) : R((r.evidence && r.evidence.error) || r.error); }
@@ -2149,6 +2151,84 @@ function adaptersLive() {
     }
     return a;
   });
+}
+
+/* ══ v1.77: official OAuth sign-in — the user logs in on the PLATFORM's own
+ * page; passwords never touch WitForge (Charter art. III; §130–§139 provider
+ * interfaces only). Only the returned account token is stored, encrypted,
+ * in the same audited credential store. ══════════════════════════════════ */
+const oauth = require('./oauth.js');
+function decryptRec(rec) {
+  if (!rec || !rec.iv) return null;
+  try {
+    const d = crypto.createDecipheriv('aes-256-gcm', credKey(), Buffer.from(rec.iv, 'hex'));
+    d.setAuthTag(Buffer.from(rec.tag, 'hex'));
+    return Buffer.concat([d.update(Buffer.from(rec.data, 'hex')), d.final()]).toString('utf8');
+  } catch (e) { return null; }
+}
+function oauthSetApp(id, clientId, clientSecret) {
+  const pid = String(id || '').toLowerCase().slice(0, 20);
+  const prov = oauth.providerOf(pid);
+  if (!prov) return { ok: false, error: 'Unknown OAuth provider “' + pid + '”. Supported: ' + oauth.OAUTH_IDS.join(', ') };
+  clientId = String(clientId || '').trim().slice(0, 160);
+  if (!clientId) return { ok: false, error: 'client id required — register the app first (' + prov.portal + ')' };
+  S.oauthApps[pid] = { clientId, clientSecret: clientSecret ? encryptToken('oauth:' + pid, String(clientSecret).trim().slice(0, 256)) : null, updatedTs: Date.now() };
+  audit('security', 'OAUTH APP REGISTERED for ' + pid + ' (client id stored; secret ' + (clientSecret ? 'AES-256-GCM at rest' : 'none — public client') + ')', 'user');
+  save();
+  return { ok: true, provider: pid, name: prov.name };
+}
+function oauthForgetApp(id) {
+  const pid = String(id || '').toLowerCase();
+  if (!S.oauthApps[pid]) return { ok: false, error: 'No OAuth app registered for ' + pid };
+  delete S.oauthApps[pid];
+  audit('security', 'OAUTH APP REMOVED for ' + pid, 'user'); save();
+  return { ok: true };
+}
+function oauthAppSecret(pid) { const a = S.oauthApps[pid]; return a && a.clientSecret ? decryptRec(a.clientSecret) : null; }
+function oauthStatusList() {
+  return oauth.OAUTH_IDS.map(id => ({
+    id, name: oauth.providerOf(id).name,
+    configured: !!S.oauthApps[id], hasSecret: !!(S.oauthApps[id] && S.oauthApps[id].clientSecret),
+    hasToken: !!(S.creds || {})[id],
+    verified: !!(S.social && S.social.verified && S.social.verified[id]),
+    portal: oauth.providerOf(id).portal
+  }));
+}
+function oauthStart(id, redirectUri) {
+  const pid = String(id || '').toLowerCase();
+  const app = S.oauthApps[pid];
+  const r = oauth.buildAuthorize(pid, { clientId: app && app.clientId, redirectUri });
+  if (r.error) return r;
+  for (const st of Object.keys(S.oauthPending)) { if ((S.oauthPending[st].expiresTs || 0) < Date.now()) delete S.oauthPending[st]; }
+  S.oauthPending[r.state] = { id: pid, verifier: r.codeVerifier || null, redirectUri, expiresTs: r.expiresTs };
+  save();
+  audit('security', 'OAUTH SIGN-IN STARTED for ' + pid + ' (state single-use, 10-minute TTL)', 'user');
+  return { ok: true, provider: r.provider, url: r.url, state: r.state };
+}
+async function oauthExchange(id, args) {
+  const pid = String(id || '').toLowerCase();
+  const prov = oauth.providerOf(pid);
+  if (!prov) return { ok: false, error: 'Unknown OAuth provider ' + pid };
+  const app = S.oauthApps[pid];
+  if (!app) return { ok: false, error: prov.name + ' SETUP REQUIRED — register your developer app first (' + prov.portal + ').' };
+  args = args || {};
+  let pend = null;
+  if (args.state) {
+    pend = S.oauthPending[args.state];
+    if (!pend) return { ok: false, error: 'Unknown or expired sign-in state — start the sign-in again (states are single-use, 10 minutes)', truthful: true };
+    if (pend.id !== pid || (pend.expiresTs || 0) < Date.now()) { delete S.oauthPending[args.state]; save(); return { ok: false, error: 'Sign-in state expired or mismatched — start again (never silently widened)', truthful: true }; }
+    delete S.oauthPending[args.state];   /* consumed — single-use, whatever happens next */
+  }
+  const req = oauth.buildExchange(pid, { code: args.code, redirectUri: args.redirectUri || (pend && pend.redirectUri), clientId: app.clientId, clientSecret: oauthAppSecret(pid), codeVerifier: pend && pend.verifier });
+  if (req.error) return { ok: false, error: req.error };
+  const res = await guardedFetch(req.url, req.headers, { method: 'POST', body: req.body, maxBytes: 60000 });
+  if (!res.ok) return { ok: false, error: prov.name + ' token exchange failed — ' + (res.error || ('HTTP ' + res.status)), truthful: true };
+  const parsed = oauth.parseTokenResponse(pid, res.text);
+  if (parsed.error) return { ok: false, error: parsed.error };
+  setCredential(pid, parsed.accessToken);
+  audit('security', 'OAUTH SIGN-IN COMPLETED for ' + pid + ' — account token stored (scope: ' + (parsed.scope || 'default') + ')', 'system', { result: 'SUCCEEDED' });
+  save();
+  return { ok: true, provider: pid, name: prov.name, scope: parsed.scope, note: 'Account token stored encrypted. Say “verify ' + pid + '” to prove it with a real API call.' };
 }
 
 /* ── Owner authentication (scrypt + HttpOnly sessions) ───── */
@@ -3162,6 +3242,7 @@ module.exports = {
   ledgerPost, wager, economySelfTest,
   command, preview, USERFILES,
   setCredential, revokeCredential, listCreds, decryptToken, adaptersLive,
+  oauthSetApp, oauthForgetApp, oauthStatusList, oauthStart, oauthExchange,
   FORGE_COST, forgePiece, marketList, listItem, delist, buy, seedMarket,
   createPayment, confirmPayment, setRealMode,
   verifyAudit, withCid, tokenValid,

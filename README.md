@@ -1,4 +1,16 @@
-# LIAM · v1.76.1 — gemini default-model repair (3.6-flash) + label/verify fixes
+# LIAM · v1.77 — official OAuth sign-in (log in on the platform's page, never ours)
+
+**v1.77:** the SOCIAL cards on the Credentials page grow an **Official
+sign-in** block for all six platforms (X · Facebook · Instagram · Reddit ·
+LinkedIn · TikTok): register your developer app (guided, per-platform portal
+steps + the exact callback URL to register), press **Sign in**, authenticate
+on the platform's own page — the password never touches WitForge (Charter
+art. III; §130–§139) — and the callback lands back here, exchanging code →
+token server-side with PKCE where required (X). States are single-use with a
+10-minute TTL (CSRF guard); app secrets are AES-256-GCM at rest; tokens stay
+write-only. Unregistered apps report truthful SETUP REQUIRED — never a faked
+connect button. New `oauth.js` module with dry-testable wire builders
+(platform-test asserts the exact requests without network).
 
 **v1.76.1 hotfix:** gemini-2.0-flash was retired upstream — and even 2.5-flash
 now 404s for new keys ("no longer available to new users, use
