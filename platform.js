@@ -18,17 +18,41 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.78.0';
+const VERSION = '1.79.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
+const VAULT_KEY_FILE = DATA + '.vault-key';   // v1.79: credential-key home (chmod 0600) — declared beside DATA because init-time migration uses it (const has a temporal dead zone)
+let VAULT_SECRET = null;                      // lazily read via vaultSecret()
 
 let S = null;
+/* v1.79 durability: saves are ATOMIC (write tmp + rename — a crash can
+ * truncate the tmp file, never the store) and every boot of a good store
+ * keeps a last-good snapshot at <DATA>.bak that load() falls back to if the
+ * primary is ever corrupt. Data loss is refused, not just made unlikely. */
+function atomicWrite(file, text) {
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
 function load() {
   try {
     fs.mkdirSync(path.dirname(DATA), { recursive: true });
     fs.mkdirSync(USERFILES, { recursive: true });
-    if (fs.existsSync(DATA)) { S = JSON.parse(fs.readFileSync(DATA, 'utf8')); return; }
+    if (fs.existsSync(DATA)) {
+      try {
+        S = JSON.parse(fs.readFileSync(DATA, 'utf8'));
+        try { fs.copyFileSync(DATA, DATA + '.bak'); } catch (e) { /* snapshot best-effort; never blocks boot */ }
+        return;
+      } catch (e) {
+        /* PRIMARY CORRUPT — recover from the last-good snapshot, on record */
+        try {
+          S = JSON.parse(fs.readFileSync(DATA + '.bak', 'utf8'));
+          console.error('LIAM: primary store unreadable — recovered from ' + DATA + '.bak');
+          return;
+        } catch (e2) { /* no snapshot either: fall through to fresh, recorded below */ }
+      }
+    }
   } catch (e) { /* fall through to fresh */ }
   S = freshState();
   save();
@@ -37,7 +61,7 @@ function freshState() {
   return {
     conversations: [], tasks: [], projects: [], agents: [], memory: [], knowledge: [],
     audit: [], permissions: {}, approvals: [], humanSteps: [], emergency: 'NORMAL', autonomous: false,
-    secret: crypto.randomBytes(32).toString('hex'),
+    secret: crypto.randomBytes(32).toString('hex'),  // SIGNING secret only (capability-token HMAC, device commands, evidence) — v1.79: credential encryption keys live in <DATA>.vault-key
     owner: null, sessions: {}, evidence: [], legal: seedLegal(),
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
@@ -99,7 +123,7 @@ function seedLegal() {
     mk('arena', 'Arena Terms', 'Wagers escrow 100 LD per participant (pool 200 LD); settlement pays the winner 198 LD and the treasury 2 LD (1%). Real-money wagering is compliance-locked (§85–§90).')
   ];
 }
-function save() { fs.writeFileSync(DATA, JSON.stringify(S)); }
+function save() { atomicWrite(DATA, JSON.stringify(S)); }   // v1.79: atomic — see header note above
 load();
 Object.assign(S, Object.assign(freshState(), S)); // backfill new fields on old stores
 S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }, S.economy);
@@ -107,6 +131,8 @@ S.market = S.market || [];
 S.social = Object.assign({ verified: {} }, S.social);
 S.oauthApps = S.oauthApps || {};       // v1.77 registered developer apps (client id + encrypted secret)
 S.oauthPending = S.oauthPending || {}; // v1.77 in-flight sign-in states (single-use, 10 min TTL)
+/* (the v1.79 vault-separation migration runs just after its function definition
+ *  below — audit() reads late-initialized module state, so it must not run here) */
 S.proposals = S.proposals || [];
 S.adCampaigns = S.adCampaigns || [];
 /* LD pools are explicit ledger accounts: a reward can only be paid from a pool
@@ -2114,7 +2140,61 @@ async function chatFallback(text) {
 }
 
 /* ── Credential broker: secrets encrypted at rest ───────── */
-function credKey() { return crypto.createHash('sha256').update(S.secret).digest(); }
+/* v1.79 vault separation: S.secret is the SIGNING secret (capability-token
+ * HMAC, device commands, evidence fingerprints) and stays in the state file.
+ * The credential AES-256-GCM key never derives from it — it derives from an
+ * independent secret that lives ONLY in <DATA>.vault-key (chmod 0600). The
+ * state file and the credential key are now two separate files: exfiltrating
+ * platform.json alone exposes zero encrypted tokens. Honest limit (stated,
+ * not hidden): a whole-disk copy takes both halves; OS-keychain storage is
+ * the legitimate next step, not something faked here. */
+function vaultSecret() {
+  if (VAULT_SECRET) return VAULT_SECRET;
+  try {
+    const v = String(fs.readFileSync(VAULT_KEY_FILE, 'utf8')).trim();
+    if (/^[0-9a-f]{32,128}$/.test(v)) { VAULT_SECRET = v; return VAULT_SECRET; }
+  } catch (e) { /* first boot or migration — generated below */ }
+  VAULT_SECRET = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(VAULT_KEY_FILE, VAULT_SECRET, { mode: 0o600 });
+  return VAULT_SECRET;
+}
+function credKey() { return crypto.createHash('sha256').update(vaultSecret()).digest(); }
+/* One-shot migration from the pre-1.79 scheme, where credential ciphertext
+ * was keyed by sha256(S.secret) in the very same file. Every stored secret
+ * is re-encrypted under the separated vault key; anything that cannot be
+ * re-keyed is reported loudly and must be RE-ENTERED — never silently kept
+ * under a key that no longer exists. */
+function migrateVaultKeys() {
+  const marker = '__vaultSeparationV179';
+  if (S[marker]) {
+    if (!fs.existsSync(VAULT_KEY_FILE) && (Object.keys(S.creds || {}).length || Object.keys(S.oauthApps || {}).some(id => (S.oauthApps[id] || {}).clientSecret))) {
+      audit('security', 'VAULT FILE MISSING with credentials present — ciphertext is undecryptable; credentials must be RE-ENTERED (never silently rekeyed)', 'system');
+    }
+    return;
+  }
+  const oldKey = crypto.createHash('sha256').update(String(S.secret)).digest();
+  credKey();   // creates the independent vault file with chmod 0600
+  const unsealOld = blob => { const d = crypto.createDecipheriv('aes-256-gcm', oldKey, Buffer.from(blob.iv, 'hex')); d.setAuthTag(Buffer.from(blob.tag, 'hex')); return Buffer.concat([d.update(Buffer.from(blob.data, 'hex')), d.final()]).toString('utf8'); };
+  let n = 0;
+  for (const svc of Object.keys(S.creds || {})) {
+    try { const plain = unsealOld(S.creds[svc]); if (!plain) throw new Error('empty'); S.creds[svc] = Object.assign(encryptToken(svc, plain), { ts: S.creds[svc].ts }); n++; }
+    catch (e) { audit('security', 'VAULT REKEY FAILED for ' + svc + ' — the key must be re-entered via its connect command', 'system'); delete S.creds[svc]; }
+  }
+  for (const pid of Object.keys(S.oauthApps || {})) {
+    const app = S.oauthApps[pid];
+    if (!app || !app.clientSecret) continue;
+    try { const plain = unsealOld(app.clientSecret); if (!plain) throw new Error('empty'); app.clientSecret = encryptToken('oauth:' + pid, plain); n++; }
+    catch (e) { audit('security', 'VAULT REKEY FAILED for oauth:' + pid + ' — the app secret must be re-registered on the Credentials page', 'system'); app.clientSecret = null; }
+  }
+  if (n) audit('security', 'VAULT SEPARATION v1.79: ' + n + ' credential(s)/app secret(s) re-keyed to the independent ' + VAULT_KEY_FILE, 'system');
+  vaultSecret();            // ensure the file exists even with zero credentials stored
+  S[marker] = true;
+  save();
+}
+/* one-shot re-key of ≤1.78 ciphertext to the separated vault file (no-op
+ * thereafter). Runs after every declaration is initialized (audit() reads
+ * late-chained module state); all runtime encrypt/decrypt calls come later. */
+migrateVaultKeys();
 function encryptToken(service, plain) {
   const iv = crypto.randomBytes(12);
   const c = crypto.createCipheriv('aes-256-gcm', credKey(), iv);

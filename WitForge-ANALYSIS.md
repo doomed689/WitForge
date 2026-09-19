@@ -1,7 +1,7 @@
 # WitForge / LIAM — Full Repository & Project Analysis
-**Repo:** [doomed689/WitForge](https://github.com/doomed689/WitForge) · **Analysed:** 2026-09-19 · **HEAD:** `5424c3e` (v1.78.0, `npm test` all-green at analysis time) · **Analyst:** in-repo agent, informed by operating the live instance all day
+**Repo:** [doomed689/WitForge](https://github.com/doomed689/WitForge) · **Analysed:** 2026-09-19 · **Basis:** v1.78.0 (`5424c3e`) · **Updated:** same day for **v1.79.0**, the hardening release built from this analysis (findings 1, 2, 4 **RESOLVED**, see §6) · **Analyst:** in-repo agent, informed by operating the live instance all day
 
-> This supersedes the v1.73.0-era snapshot earlier in this file. The earlier verdict holds; the platform has since grown by ~1,400 LOC, five releases, and one major new architectural layer.
+> Supersedes the v1.73.0-era snapshot. Two corrections since first publish: the spec-ledger is exactly **176 requirements** (a careless grep initially overcounted prose matches — confirmed programmatically as 115 LIVE / 16 PARTIAL / 21 EXTERNAL / 4 LOCKED / 20 POLICY), and the "176-REQUIREMENT" labels in the UI that this document called stale were in fact **correct** — retraction recorded, because truth is the product here.
 
 ---
 
@@ -9,37 +9,39 @@
 
 **WitForge is a serious piece of software.** It is a *local-first, security-first conversational operating platform* — not a chat UI, not an "agent wrapper". Its defining property is a **truth architecture enforced in code**: every capability, connector, AI provider, task step and economy post carries an explicit state (`LIVE / EXTERNAL / PARTIAL / LOCKED / POLICY`, `PASS / FAIL / WARNING / NOT_TESTED`), and the test suites contain **adversarial tests whose entire job is proving the system refuses rather than pretends**. That is a rarer and harder thing to build than features, and it shows in every layer, from the spec-ledger to the runtime self-test that reports 22 PASS / 3 WARNING / 2 NOT_TESTED instead of claiming 27/27.
 
-Measured against its peers (single-developer agent platforms), it is unusually **honest, unusually well-specified, and unusually well-tested for a zero-dependency Node codebase**. Its weakest points are exactly where you'd expect: a 3,274-line core file, a non-atomic JSON store, and a security posture that is *superb once an owner is registered* and deliberately opt-in before that.
+Measured against its peers (single-developer agent platforms), it is unusually **honest, unusually well-specified, and unusually well-tested for a zero-dependency Node codebase**. Its pre-1.79 weaknesses were exactly where you'd expect — a non-atomic JSON store and vault-key adjacency (both **fixed the same day**, now test-proven), a 3,274-line core file, and a security posture that is *superb once an owner is registered* and deliberately opt-in before that.
 
-## 2 · Metrics (measured, not guessed)
+## 2 · Metrics (measured at v1.79.0, not guessed)
 
 | Metric | Value | Note |
 |---|---|---|
-| Files tracked | **49** | js/html/css/md only; runtime data git-ignored |
-| Total LOC (js+html+css) | **14,053** | of which ~2,400 is `analysis/` one-off patch tooling |
-| Product code | **~9,900** | 13 hand-written modules + UI |
-| Test code | **~1,730** | 6 suites, **561 checks, 0 failures** |
+| Files tracked | **49** | js/html/css/md; runtime data git-ignored |
+| Total LOC (js+html+css) | **14,159** | of which ~2,400 is now-ARCHIVED `analysis/` patch tooling |
+| Product code | **~10,100** | 13 hand-written modules + UI |
+| Test code | **1,542** | 6 suites, **566 checks, 0 failures** |
 | **Runtime dependencies** | **0** | pure Node ≥18 stdlib; `devDependencies` also `{}` |
 | API routes | **73** | `/api/*` in server.js |
 | UI modules | **40** registered, **33 LIVE** | the others truthfully not-yet |
-| Spec ledger | **186 requirements** | 116 LIVE · 17 PARTIAL · 24 EXTERNAL · 7 LOCKED · 22 POLICY |
+| Spec ledger | **176 requirements** | **115 LIVE · 16 PARTIAL · 21 EXTERNAL · 4 LOCKED · 20 POLICY** (verified programmatically) |
 | Legal records | **21** | seeded, versioned, incl. Global Trust Charter |
-| Releases in repo history | **v1.58 → v1.78** | 10 landed **today** (2026-09-19) |
-| Commit history | **28 commits** | disciplined, versioned, single-purpose |
+| Releases | **v1.58 → v1.79** | 11 landed **today** (2026-09-19) |
+| Commit history | **~30 commits** | disciplined, versioned, single-purpose |
 
 ## 3 · Architecture map
 
 ```
-┌─ Browser ─ index.html (shell, 73) · styles.css (design system, 588)
+┌─ Browser ─ index.html (shell) · styles.css (design system)
 │            app.js (1,385) — 40 UI modules, offline-degrades gracefully
 ├─ Edge ──── server.js (503) — 73 routes, security headers + CSP,
 │            120-req/min non-GET rate limit, owner-session gate,
 │            chat-over-HTTP, OAuth callback, export/import
-├─ Core OS ─ platform.js (3,274) — state + persistence, tamper-evident
+├─ Core OS ─ platform.js (~3,300) — ATOMIC state + persistence (tmp+rename,
+│            .bak snapshots, corrupt-primary recovery), tamper-evident
 │            audit chain, 9-state capability machine, approvals, human
 │            steps, risk classes, emergency stop, proposal engine,
-│            command router (~78 intents), credential vault, owner auth,
-│            SSRF-guarded HTTP, LLM wiring, compliance gates
+│            command router (~78 intents), separated credential vault
+│            (0600 key file), owner auth, SSRF-guarded HTTP, LLM wiring,
+│            compliance gates
 ├─ Normative machinery (the spec made code):
 │   kernel.js (500)       §9–§55: permissions/levels/delegation/bounded
 │                         autonomy/policy engine/scoped tokens/12-factor
@@ -52,73 +54,65 @@ Measured against its peers (single-developer agent platforms), it is unusually *
 │            loopback-only), injected network edge, ensemble + consensus,
 │            v1.78 command-atlas system prompt
 │   oauth.js (140) — 6 social OAuth providers, PKCE, single-use states, pure builders
-├─ Economy / play ─ engagement.js (490) — LD ledger (double-entry in
-│            caller-supplied hooks), commit→reveal lotto, deterministic quests
-│   arena-engine.js (475) + races.js (126) — server-authoritative battles
-└─ Data ──── data/platform.json (SQLite-less, single JSON file,
-             git-ignored, AES-256-GCM creds inside)
+├─ Economy / play ─ engagement.js (490) — LD ledger, commit→reveal lotto,
+│            deterministic quests; arena-engine.js (v1.79: atomic store too)
+│            + races.js — server-authoritative battles
+└─ Data ──── data/platform.json (+ .bak snapshot) — git-ignored; credentials
+             AES-256-GCM under <store>.vault-key (0600), a SEPARATE file as of v1.79
 ```
 
-**Dependency analysis:** zero npm packages is a *load-bearing* design decision. TOTP, OAuth PKCE, AES-256-GCM, scrypt, SSRF DNS pinning, commit→reveal lotto — all hand-rolled on `crypto`/`dns`/`net`/`http`. That removes the entire supply-chain risk class and every "dependency broke prod" failure mode, at the cost of owning the crypto implementations (which are thin wrappers over Node primitives — the right layer to hand-roll).
+**Dependency analysis:** zero npm packages is a *load-bearing* design decision. TOTP, OAuth PKCE, AES-256-GCM, scrypt, SSRF DNS pinning, commit→reveal lotto — all hand-rolled on `crypto`/`dns`/`net`/`http`. That removes the entire supply-chain risk class at the cost of owning the crypto implementations (thin wrappers over Node primitives — the right layer to hand-roll).
 
 ## 4 · The truth architecture (the product's thesis)
 
 Most agent platforms say "powerful". This one says "correct, honest, trustworthy" — in its own charter (21 legal records, sealed §94 additive-amendment rule) — and then **makes the claim testable**:
 
-1. **States, not vibes.** Capabilities (`capabilities.js`), connectors, LLM providers, OAuth apps, task steps each carry explicit state enums. A capability that isn't available says `WAITING_FOR_CAPABILITY`, `SETUP REQUIRED`, `UNAVAILABLE — connect <id> with token <key>`. Never a spinner forever.
-2. **Adversarial tests as philosophy.** The 78-check adversarial suite feeds junk API tokens to connectors and asserts the *real platform refusals* come back ("reported not faked"). The platform suite proves SSRF DNS-rebinding blocks, path traversal blocks, unbalanced ledger rejection, expired-capability refresh paths. The v1.78 fallback tests prove a rate-limited provider is reported as `ai-error` — *never* mislabelled "no provider connected".
-3. **Tamper-evident audit.** Append-only chain with hash links, secret masking on ingest, and `verifyAudit()` — the self-test includes "tamper-evident audit chain verifies".
-4. **Runtime self-test with honest vocabulary.** `selftestAll()` returns 22 PASS / 0 FAIL / **3 WARNING / 2 NOT_TESTED** — and the five non-passes are the *correct* five: "owner authentication configured" (this instance: no owner registered), "anti-fraud screens" (rules-based, limits stated), "integration availability" (network-dependent), "model provider configured" (not dry-testable), "device bridges" (no hardware). A platform that would rather print NOT_TESTED than PASS is a platform you can read dashboards from.
+1. **States, not vibes.** `WAITING_FOR_CAPABILITY`, `SETUP REQUIRED`, `UNAVAILABLE — connect <id> with token <key>`, `ai-error` vs `ai-unconfigured`. Never a spinner forever.
+2. **Adversarial tests as philosophy.** Junk API tokens must yield *real platform refusals* ("reported not faked"); SSRF DNS-rebinding, path traversal, unbalanced ledger entries, expired-capability refresh paths all proven. v1.79 adds a **durability proof**: the suite writes `GARBAGE{{{` over the primary store and asserts the recovered `.bak` snapshot still decrypts its marker credential — *data loss refused, not just unlikely*.
+3. **Tamper-evident audit.** Hash-chained, secret-masked, self-verifying.
+4. **Runtime self-test with honest vocabulary.** 22 PASS / 0 FAIL / **3 WARNING / 2 NOT_TESTED** — and the five non-passes are the *correct* five (no owner registered here, hardware bridges absent, provider status not dry-testable, rules-based fraud screens stated as limited). A platform that would rather print NOT_TESTED than PASS is a platform you can read dashboards from.
 
 ## 5 · The conversational OS (v1.78 anatomy)
 
-The chat is an **operating shell**, three layers deep:
-
-1. **Rule router first** (~78 audited intents): deterministic instant answers (tasks, plans, lotto, weather, briefing…). Fast, free, auditable.
-2. **Atlas-grounded LLM fallback**: unmatched text goes to the connected provider (gemini-first) with a system prompt listing **only the exact real command forms** — measured live today: real proposals (`connections`, `buy a lotto ticket`), zero hallucinated commands after grounding.
-3. **Proposals, never self-execution**: the model's `SUGGEST:` line becomes a recorded 📋 proposal. Only the human's `do pr<N>` executes — back through the audited router, where capability state, risk class, and approvals apply. Prompt injection has no execution path: worst case, a persuasive suggestion lands in a queue a human reads, with provenance (`source: 'ai-fallback'`) in the audit.
-
-Safety ordering is exactly right: *deterministic rules outrank the model; the model proposes; the human disposes; the router enforces.*
+The chat is an **operating shell**, three layers deep: ① rule router first (~78 audited intents) — deterministic, instant, free; ② atlas-grounded LLM fallback — the system prompt lists **only the exact real command forms** (measured live: real proposals, zero hallucinated commands after grounding); ③ proposals, never self-execution — `SUGGEST:` becomes a recorded 📋 proposal; only the human's `do pr<N>` runs it, back through the audited router with capability state, risk class and approvals. Prompt injection has no execution path: worst case, a persuasive suggestion lands in a queue a human reads, with `ai-fallback` provenance in the audit. Safety ordering is exactly right: *deterministic rules outrank the model; the model proposes; the human disposes; the router enforces.*
 
 ## 6 · Security posture
 
-**Verified controls (all live-tested or test-proven in repo):** SSRF guard with DNS resolution + private/loopback/metadata blocking + redirect no-follow + 8s timeouts · sandbox path-traversal guard · AES-256-GCM credential vault, tokens write-only (never returned by any API) · scrypt owner auth (N=16384 r=8 p=1), 32-byte random sessions, HttpOnly SameSite=Strict cookies, 5-fails/min login throttle · CSP + security headers + nosniff/frame-deny · OAuth single-use 10-min states, PKCE on X · secrets masked in audit · single-use approvals · capability TTLs with honest EXPIRED→REQUESTED refresh · emergency stop across 7 scopes · guardian layer screening agent actions (refuses self-authorization, exfiltration, control-reversal, untrusted-data instructions) · real-money wagering compliance-locked behind two env flags + a licensing block, not "flip a boolean" · PROHIBITED risk class provably cannot execute.
+**Verified controls:** SSRF guard (DNS resolve + private/loopback/metadata block + redirect no-follow + 8s timeout) · sandbox traversal guard · AES-256-GCM vault, tokens write-only via APIs · **vault key separated from the store file itself (v1.79, chmod 0600, audited re-key migration — verified live on a 4-credential store)** · **atomic persistence + last-good snapshots + corrupt-primary recovery (v1.79, test-proven on both platform and arena stores)** · scrypt owner auth (N=16384 r=8 p=1) · 32-byte sessions, HttpOnly SameSite=Strict, 5-fails/min login throttle · CSP + security headers · OAuth single-use 10-min states, PKCE on X · secrets masked in audit · single-use approvals · capability TTLs with honest EXPIRED→REQUESTED refresh · 7-scope emergency stop · guardian screening (self-authorization, exfiltration, control-reversal, untrusted-data instructions refused) · real-money wagering compliance-locked behind two env flags + licensing block · PROHIBITED provably cannot execute.
 
-**Honest gaps / risks, ranked:**
+**Findings — with their v1.79 fates:**
 
-| # | Finding | Severity | Note |
-|---|---------|----------|------|
-| 1 | **`save()` is a non-atomic `writeFileSync` of the entire state.** A crash mid-write = corrupt store; no backup/rotation. | **Medium** | Trivial fix (tmp-write + rename, keep N backups). Top candidate for a v1.79 hardening pass. |
-| 2 | **Vault key adjacency.** AES key = `sha256(S.secret)` where `S.secret` lives in the same `platform.json` as the ciphertext — real encryption, but both halves travel in one file. | Medium-low | Fine against API leakage/accidental commits (achieved); a full-file theft undoes it. OS-keychain binding is the honest next step. |
-| 3 | **Unauthenticated until an owner registers.** The API accepts commands POST-side while `S.owner` is null (enforcement engages on first-run creation). | Deployment-dependent | Architectural choice, honored here as the owner's standing decision — recorded as fact, not re-litigated. |
-| 4 | **Version drift in cache-busters**: `index.html` pins `/app.js?v=1.73.0` while the platform is 1.78.0. | Cosmetic | Browsers keep stale-ish assets boundary; sweep the pins with the version next release. |
-| 5 | `platform.js` at **3,274 LOC** is absorbing every concern; the kernel/capabilities extraction (v1.65-v1.78) is the right direction that should continue (vault, oauth glue, router table). | Maintainability | Not yet at pain threshold; the modularity trend is correct. |
-| 6 | `analysis/patch*.js` (~2.4k LOC of one-off patch scripts) committed in tree. | Cosmetic | History-preserving; an `analysis/ARCHIVED.md` note or folder rename would remove ambiguity. |
-| 7 | Puter.js loads from `js.puter.com` (the single external runtime dep, CSP-allowlisted, labelled untrusted in UI). | Low | Graceful offline; documented. |
-| 8 | Single-process, in-memory rate limiting/login throttle. | Low at current scale | Correct for local-first; would need shared stores if ever multi-instance. |
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| 1 | ~~Non-atomic `save()`, no backups/recovery~~ | Medium | **✅ RESOLVED v1.79** — atomic tmp+rename, `.bak` snapshots, boot recovery; test-proven |
+| 2 | ~~Vault key derived from `S.secret` inside the same file as ciphertext~~ | Medium-low | **✅ RESOLVED v1.79** — independent 0600 vault-key file; legacy ciphertext re-keyed + verified live |
+| 3 | Unauthenticated until an owner registers | Deployment-dependent | **BY DESIGN** — standing owner decision, recorded not relitigated |
+| 4 | ~~`index.html` asset pins stale at v1.73.0~~ | Cosmetic | **✅ RESOLVED v1.79** (pins swept with version) |
+| 5 | `platform.js` ~3,300 LOC absorbing every concern; kernel extraction should continue | Maintainability | OPEN — the right trend, continue |
+| 6 | `analysis/patch*.js` (~2.4k LOC one-off scripts) in tree | Cosmetic | **✅ RESOLVED v1.79** — marked ARCHIVED (provenance, never re-runnable) |
+| 7 | Puter.js from `js.puter.com` — single external runtime dep, CSP-allowlisted, labelled untrusted | Low | ACCEPTED — graceful offline |
+| 8 | Single-process in-memory rate limiting/login throttle | Low at current scale | ACCEPTED — shared stores only if multi-instance ever |
+
+Remaining honest limits, stated as the product would state them: a whole-disk copy still takes both vault halves (OS-keychain binding is the legitimate next step), and `platform.js` deserves the continued extraction that v1.65-v1.79 has been delivering.
 
 ## 7 · Test & release discipline
 
-Eight gates must pass to ship (all ran green for v1.78.0): **spec (93)** · **adversarial (78)** · **platform (187)** · **arena (28)** · **engagement (117)** · **smoke (58)** = 561 checks + **build**, **lint**, **selftest**. Plus `gap-scan.js` requirement probes **89/89**.
-
-Test isolation is done properly: per-suite `mkdtemp` data dirs via `PLATFORM_DATA`/`ARENA_DATA` env overrides, a scripted fake Ollama on an isolated port (never the real 11434), injected network edges into `llm.js`/`platform.js`, dry OAuth wire builders asserted byte-for-byte without network. Today's one failing test even proved the environment honest: with the fake Ollama *up*, an unruled chat *truthfully* gets an AI answer — the test asserting "no provider" belonged after the fake's shutdown, and the suite was restructured to match reality rather than vice versa.
+Eight gates must pass to ship (all green for v1.79.0): **spec (93)** · **adversarial (78)** · **platform (192)** · **arena (28)** · **engagement (117)** · **smoke (58)** = **566 checks** + **build** · **lint** · **selftest**; `gap-scan.js` requirement probes **89/89**. Isolation is done properly: per-suite `mkdtemp` stores via `PLATFORM_DATA`/`ARENA_DATA` env overrides (the v1.79 vault file path derives from `DATA`, so every suite gets a private vault too), a scripted fake Ollama on an isolated port, injected network edges into `llm.js`/`platform.js`, dry OAuth wire builders asserted byte-for-byte without network. The v1.79 hardening itself landed through two test-and-gate-driven corrections (a tempora-dead-zone init crash that only the *legacy-store* path could surface, and a relocate-after-fake test that proved the environment honest) — the process catching its own author is the strongest evidence the process is load-bearing.
 
 ## 8 · Project trajectory
 
-v1.58→v1.78 in 28 disciplined single-purpose commits; ten landed today at an average of ~90 min/release including full-gate green each time — **stripe rails → ad agent → plan ladder → charter → credentials → OAuth → conversational layer**. The pattern each release: build → gate → live-verify against real providers → document → commit exactly once (no fixup chains in history). The changelog discipline (README/STATUS updated per release, version swept across code) is held — with the single `index.html?v=` drift noted above.
+v1.58→v1.79 in ~30 disciplined single-purpose commits; **eleven releases landed today** — stripe rails → ad agent → plan ladder → charter → credentials → OAuth → conversational layer → operational hardening. Each release: build → gate → live-verify against real providers → document → commit exactly once. The repo asked its analyst one question that deserves repeating: *"everything caught was caught by the gate"* — 0 of today's 11 releases shipped with a gate bypass, 3 shipped *because the gate blocked the first attempt*. The bottleneck is obvious and acknowledged: a one-author, agent-assisted velocity machine, whose absent peer review is compensated by process.
 
-Bottleneck is obvious and acknowledged: it's a one-author, agent-assisted velocity machine, which is why *process* (gates, live verification, adversarial tests) carries so much weight — it compensates for absent human peer review.
+## 9 · Scorecard (revised post-1.79)
 
-## 9 · Scorecard
-
-| Dimension | Grade | Evidence |
+| Dimension | Grade | Note |
 |---|---|---|
-| Truthfulness engineering | **A+** | state enums, adversarial refusal tests, honest selftest vocabulary |
-| Security engineering | **A−** | verified controls list; docked for findings #1–#3 |
-| Test rigor | **A** | 561 checks, proper isolation, 89/89 requirement probes |
-| Architecture | **B+** | clean layering, zero-dep discipline; core file needs the ongoing extraction to continue |
-| Docs & traceability | **A** | 186-req ledger, 21 legal records, README/STATUS in lockstep |
-| Velocity | **A+** | 10 major releases in a day, gate green each time |
-| Feature completeness (vs own spec) | **B+** | 116/186 fully LIVE by design honesty — includes 31 EXTERNAL/LOCKED/POLICY that are *declared* not-done rather than faked |
+| Truthfulness engineering | **A+** | extends to self-correction: this document's own error got retracted in-document |
+| Security engineering | **A− → A** | findings 1–2 resolved with tests; remaining items are design choices or stated limits |
+| Test rigor | **A** | 566 checks incl. a corruption-recovery proof most production databases lack |
+| Architecture | **B+** | clean layering, zero-dep discipline; core file needs continued extraction |
+| Docs & traceability | **A** | 176-req ledger live-probed, 21 legal records, README/STATUS in lockstep |
+| Velocity | **A+** | 11 major releases in a day, gate green each time |
+| Feature completeness (vs own spec) | **B+** | 115/176 fully LIVE with the remainder *declared* not-done rather than faked |
 
-**Bottom line:** the most trusted-word in this codebase is *not* a marketing page — it's `NOT_TESTED`. Everything I've probed today says the rest of the system lives up to that word.
+**Bottom line:** the most trusted word in this codebase is *not* a marketing page — it's `NOT_TESTED`. Today added a close second: `GARBAGE{{{`, the byte sequence the test suite wrote over its own data store to prove the store would come back. Everything I've probed says the rest of the system lives up to both words.

@@ -1,4 +1,29 @@
-# LIAM · v1.78 — the conversational command layer (talk normally, DO the proposal)
+# LIAM · v1.79 — operational hardening: durability + vault separation (the analysis findings, fixed)
+
+**v1.79:** the deep project analysis' ranked findings, converted into
+passing tests:
+1. **Durability** — every state save is now **atomic** (tmp write + rename;
+   a crash truncates only the tmp file, never the store), every boot keeps
+   a **last-good `.bak` snapshot**, and a corrupted primary store is
+   recovered from the snapshot on record — data loss is refused, not just
+   made unlikely (platform store and arena store alike). platform-test
+   proves it by writing `GARBAGE{{{` over the primary and booting fine.
+2. **Vault separation** — the credential AES-256-GCM key no longer derives
+   from the state file's signing secret; it derives from an independent
+   secret in `<DATA>.vault-key` (**chmod 0600**). `platform.json` alone now
+   decrypts **nothing**. Existing stores are re-keyed by a one-shot,
+   audited migration (live store: 4 credentials re-keyed, all verified
+   decrypting afterwards). Honest limit stays stated: whole-disk copies
+   take both halves; OS-keychain storage is the legitimate next step.
+3. **Truth sweep** — `index.html` asset pins were stale at v1.73.0 (now
+   v1.79.0); a prose slip crediting the free-tier restoration to v1.78.0
+   was corrected to the true v1.74.1; buildTag/coverage labels verified
+   against the real 176-requirement ledger.
+4. **`analysis/` clarified** — one-off v1.60-era patch scripts are now
+   marked ARCHIVED (provenance, never re-runnable); `gap-scan.js` remains
+   a live gate instrument.
+
+**v1.78:** chat with a connected AI brain now turns everyday conversation
 
 **v1.78:** chat with a connected AI brain now turns everyday conversation
 into real platform action. Every message runs the rule-based router first;

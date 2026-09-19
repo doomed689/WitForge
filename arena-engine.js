@@ -24,11 +24,24 @@ const SLOTS = [
 const COMBAT_SLOTS = ['weapon', 'head', 'torso', 'hand_l', 'hand_r', 'foot_l', 'foot_r', 'shield', 'arm_upper_l', 'arm_upper_r', 'leg_upper_l', 'leg_upper_r'];
 
 let db = { avatars: [], battles: [] };
+/* v1.79: same durability contract as the platform store — atomic writes
+ * (tmp + rename) and a last-good .bak snapshot for corruption recovery. */
 try {
   fs.mkdirSync(path.dirname(DATA), { recursive: true });
-  if (fs.existsSync(DATA)) db = JSON.parse(fs.readFileSync(DATA, 'utf8'));
+  if (fs.existsSync(DATA)) {
+    try {
+      db = JSON.parse(fs.readFileSync(DATA, 'utf8'));
+      try { fs.copyFileSync(DATA, DATA + '.bak'); } catch (e) { /* snapshot best-effort */ }
+    } catch (e) {
+      try { db = JSON.parse(fs.readFileSync(DATA + '.bak', 'utf8')); console.error('LIAM arena: primary store unreadable — recovered from .bak'); } catch (e2) { /* fresh db */ }
+    }
+  }
 } catch (e) { /* fresh db */ }
-function save() { fs.writeFileSync(DATA, JSON.stringify(db, null, 1)); }
+function save() {
+  const tmp = DATA + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 1));
+  fs.renameSync(tmp, DATA);
+}
 
 const raceOf = a => RACES.find(r => r.id === a.raceId);
 

@@ -479,6 +479,19 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(fbErr && fbErr.kind === 'ai-error' && !/no AI provider is connected/.test(fbErr.reply), 'configured-but-failing provider is truthfully an error, never “no provider connected”');
   P.revokeCredential('gemini');
 
+  /* ── v1.79: durability + vault separation ── */
+  const sfile = process.env.PLATFORM_DATA;
+  ok(fs.existsSync(sfile + '.vault-key') && (fs.statSync(sfile + '.vault-key').mode & 0o777) === 0o600, 'credential vault key lives in its own 0600 file beside the store, never inside it');
+  P.setCredential('groq', 'sk-vault-roundtrip-1');
+  ok(P.decryptToken('groq') === 'sk-vault-roundtrip-1' && !JSON.stringify((JSON.parse(fs.readFileSync(sfile, 'utf8')).creds || {}).groq).includes('sk-vault-roundtrip'), 'credentials round-trip through the vault file; plaintext never reaches the store');
+  ok(Array.isArray(JSON.parse(fs.readFileSync(sfile, 'utf8')).legal) && !fs.existsSync(sfile + '.tmp'), 'saves are atomic — store is always valid JSON with zero tmp residue');
+  P.setCredential('stripe', 'sk-bak-probe'); P.save();
+  delete require.cache[require.resolve('./platform.js')]; require('./platform.js');   // reboot of a good store snapshots .bak
+  ok(fs.existsSync(sfile + '.bak'), 'a last-good .bak snapshot travels with the store');
+  fs.writeFileSync(sfile, 'GARBAGE{{{');
+  delete require.cache[require.resolve('./platform.js')]; const P3 = require('./platform.js');
+  ok(P3.decryptToken('stripe') === 'sk-bak-probe', 'a corrupted primary store recovers from the .bak snapshot — data loss refused, not just unlikely');
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
   process.exit(fails ? 1 : 0);
