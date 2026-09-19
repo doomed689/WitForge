@@ -217,6 +217,7 @@ const server = http.createServer(async (req, res) => {
     if (b.action === 'claim') return json(res, 200, await P.command('claim task ' + String(b.id || '')));
     return json(res, 200, { ok: false, error: 'Unknown quest action' });
   }
+  if (p === '/api/ld-packages') return json(res, 200, Object.assign({ ok: true }, P.ldPackagesList()));
   if (p === '/api/ldmarket') {
     if (req.method === 'GET') return json(res, 200, { ok: true, market: engagement.LD_MARKET, economy: P.economyReport(), prices: P.piecePriceList() });
     const b = await body(req);

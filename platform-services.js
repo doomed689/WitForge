@@ -355,6 +355,8 @@ const PLANS = [
     entitlements: { 'agents.max': 10, 'storage.mb': 5000, 'ai.daily': 1000, 'tools.max': 20, 'org.seats': 3, 'marketplace.list': 25, 'api.access': true, 'guardian.level': 'HARDENED', 'lotto.ticketsPerDay': 50, 'events.access': 'priority', 'signin.bonusPct': 10, 'support': 'priority', 'audit.export': true } },
   { id: 'elite', name: 'Elite', family: 'personal', rank: 3, priceAudMonth: 79, blurb: 'Maximum seat: maximum guardian posture, largest personal allowances.',
     entitlements: { 'agents.max': 25, 'storage.mb': 25000, 'ai.daily': 5000, 'tools.max': 32, 'org.seats': 5, 'marketplace.list': 100, 'api.access': true, 'guardian.level': 'MAXIMUM', 'lotto.ticketsPerDay': 200, 'events.access': 'priority', 'signin.bonusPct': 20, 'support': 'priority', 'audit.export': true } },
+  { id: 'ultra', name: 'Ultra', family: 'personal', rank: 4, priceAudMonth: 149, blurb: 'The personal ceiling: every personal entitlement at its largest, first access to new tools.',
+    entitlements: { 'agents.max': 50, 'storage.mb': 100000, 'ai.daily': 20000, 'tools.max': 40, 'org.seats': 8, 'marketplace.list': 500, 'api.access': true, 'guardian.level': 'MAXIMUM', 'lotto.ticketsPerDay': 500, 'events.access': 'sponsored', 'signin.bonusPct': 25, 'support': 'dedicated', 'audit.export': true } },
   /* ── business ───────────────────────────────────────────────────── */
   { id: 'business', name: 'Business', family: 'business', rank: 1, priceAudMonth: 49, blurb: 'One organisation, several operators, shared entitlements.',
     entitlements: { 'agents.max': 50, 'storage.mb': 25000, 'ai.daily': 4000, 'tools.max': 32, 'org.seats': 25, 'marketplace.list': 200, 'api.access': true, 'guardian.level': 'HARDENED', 'lotto.ticketsPerDay': 100, 'events.access': 'priority', 'signin.bonusPct': 10, 'support': 'business', 'audit.export': true } },
@@ -362,8 +364,6 @@ const PLANS = [
     entitlements: { 'agents.max': 200, 'storage.mb': 100000, 'ai.daily': 20000, 'tools.max': 40, 'org.seats': 100, 'marketplace.list': 1000, 'api.access': true, 'guardian.level': 'MAXIMUM', 'lotto.ticketsPerDay': 500, 'events.access': 'priority', 'signin.bonusPct': 15, 'support': 'business', 'audit.export': true } },
   { id: 'enterprise', name: 'Enterprise', family: 'business', rank: 3, priceAudMonth: 499, blurb: 'Whole-company operation with segregation and evidence export.',
     entitlements: { 'agents.max': 1000, 'storage.mb': 500000, 'ai.daily': 100000, 'tools.max': 60, 'org.seats': 500, 'marketplace.list': 5000, 'api.access': true, 'guardian.level': 'MAXIMUM', 'lotto.ticketsPerDay': 2000, 'events.access': 'sponsored', 'signin.bonusPct': 20, 'support': 'dedicated', 'audit.export': true } },
-  { id: 'enterprise-max', name: 'Enterprise Max', family: 'business', rank: 4, priceAudMonth: 1999, blurb: 'Largest allowances this build can express, with a dedicated support path.',
-    entitlements: { 'agents.max': 5000, 'storage.mb': 2000000, 'ai.daily': 250000, 'tools.max': 60, 'org.seats': 5000, 'marketplace.list': 50000, 'api.access': true, 'guardian.level': 'MAXIMUM', 'lotto.ticketsPerDay': 10000, 'events.access': 'sponsored', 'signin.bonusPct': 25, 'support': 'dedicated', 'audit.export': true } }
 ];
 function plansFor(family) { return PLANS.filter(p => p.family === family); }
 function planById(id) { return PLANS.find(p => p.id === String(id || '').toLowerCase()) || null; }
@@ -594,9 +594,9 @@ function otelExport(state) {
   const ns = ms => ms * 1e6;
   return {
     resourceSpans: [{
-      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.68.0' } }] },
+      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.69.0' } }] },
       scopeSpans: [{
-        scope: { name: 'witforge.platform', version: '1.68.0' },
+        scope: { name: 'witforge.platform', version: '1.69.0' },
         spans: (state.spans || []).map(s => ({
           traceId: (s.cid || s.id).padEnd(32, '0').slice(0, 32),
           spanId: s.id.replace(/[^a-f0-9]/gi, '').padEnd(16, '0').slice(0, 16),
@@ -644,7 +644,7 @@ function selftestSummary(checks) {
 function releaseMeta(opts) {
   opts = opts || {};
   return {
-    version: opts.version || '1.68.0',
+    version: opts.version || '1.69.0',
     buildDate: opts.buildDate || now(),
     sourceRevision: opts.sourceRevision || 'unknown (no VCS metadata available)',
     dependencyState: opts.dependencyState || 'zero runtime dependencies; Node built-ins only',

@@ -172,7 +172,7 @@ const sum = () => Object.values(P.state.ledger.accounts).reduce((a, v) => a + v,
 
   /* ══ 6. multi-tiered subscriptions: personal AND business ════════ */
   ok(SV.PLANS.length === 8, 'eight plan tiers exist');
-  ok(SV.plansFor('personal').length === 4 && SV.plansFor('business').length === 4, 'four personal tiers and four business tiers');
+  ok(SV.plansFor('personal').length === 5 && SV.plansFor('business').length === 3, 'five personal tiers and three business tiers');
   const personal = SV.plansFor('personal'), business = SV.plansFor('business');
   ok(personal.every((p, i) => i === 0 || p.rank > personal[i - 1].rank), 'personal tiers are ranked');
   ok(business.every((p, i) => i === 0 || p.rank > business[i - 1].rank), 'business tiers are ranked');
@@ -271,7 +271,7 @@ const sum = () => Object.values(P.state.ledger.accounts).reduce((a, v) => a + v,
   ok(P.state.economy.realMode === false, 'real-money mode never turned on');
   ok(P.economyConfig().arenaRealMoneySettlement === false, 'arena real-money settlement stays off');
   ok(sum() >= 0, 'the ledger sum invariant holds');
-  ok(P.releaseInfo().version === '1.68.0', 'the release reports 1.68.0');
+  ok(P.releaseInfo().version === '1.69.0', 'the release reports 1.69.0');
 
   function mathSpread(buyRate, sellRate) { return Math.round((1 - sellRate / buyRate) * 100) / 100; }
 

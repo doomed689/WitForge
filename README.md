@@ -1,4 +1,4 @@
-# LIAM · v1.67 — a multi-provider AI brain for Chat (free tiers + local Ollama)
+# LIAM · v1.69 — plans 5+3, LD packages, social connectors, chat self-update
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,48 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 124 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM provider layer |
+| `platform-test.js` | 144 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM, plans/LD packages/social/self-update |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
 | `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
 `node analysis/gap-scan.js` → **84/84 probed requirements present**.
+
+## v1.69 — subscriptions reshaped, LD packages, social connectors, self-update
+
+- **Plans are now 5 personal + 3 business.** Personal: free · plus · pro ·
+  elite · **ultra** (new, rank 4). Business: business · business-plus ·
+  enterprise (enterprise-max retired). Entitlements stay server-enforced;
+  price labels stay reference-only until billing authority exists.
+- **LD packages in the marketplace.** Five bundles — starter 500, value
+  1,000+200, pro 2,500+600, elite 5,000+2,000, founder 12,000+5,000 LD —
+  at notional A$5/10/25/50/100 with the bonus improving the effective rate.
+  Real double-entry postings, `SIMULATION`-labelled, buyable from Chat
+  (`buy ld package <id>`) or the Marketplace workspace. Billing stays
+  compliance-locked.
+- **Social connectors on official APIs.** x, facebook, reddit (postable) +
+  instagram, linkedin, tiktok (verify-only, honest reasons). Your own
+  developer credentials via the encrypted connect flow: `connect x with
+  token <t>` → `verify x` (a real API round trip) → `post x <text>` —
+  posting is high-risk, approval-gated, refuses without a proven-live
+  credential, and is never simulated.
+- **Chat-driven self-update.** `update check` compares this install with
+  the audited public repo (read-only). `update apply` is high-risk and
+  approval-gated: refuses downgrades/replacement, backs up every
+  overwritten file to `data/update-backups/`, records per-file sha256 in
+  audit, skips `data/` and `.git`, and never restarts itself — restart is
+  always the owner's action.
+
+## v1.68 — ask all: the ensemble mode
+
+`ask all <question>` (or `ensemble <question>`) fans one question out to
+**every connected provider simultaneously** — labelled answers come back
+per provider with model and latency, and a provider failing (rate limit,
+bad key, offline) is reported as a failure line without sinking the rest.
+`llm.verify`, `llm.chat` and the ensemble all share one rule for local
+models: if the requested model is not installed in Ollama, the first
+installed model answers and is named truthfully in the response.
 
 ## v1.67 — Chat gets a brain: six LLM providers, free-first, truth-stated
 

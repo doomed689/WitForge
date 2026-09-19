@@ -20,7 +20,7 @@ tranche. They are kept in the tree so every claim in `README.md`, `STATUS.md` an
 
 ```sh
 node analysis/gap-scan.js          # 84/84 probed requirements present
-npm test                           # 497 checks across six suites, 0 failures
+npm test                           # 517 checks across six suites, 0 failures
 npm run build && npm run lint      # source validation + project lint rules
 npm run selftest                   # §126 self-test (PASS/FAIL/WARNING/NOT_TESTED)
 python3 analysis/report.py         # regenerate the report

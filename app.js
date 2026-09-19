@@ -60,7 +60,7 @@ const MODULES = [
   m('notifications', 'SYSTEM', 'Notifications', '✦', 'operational', 'Local LIAM store', 'Local notification centre fed by audit events.'),
   m('documentation', 'SYSTEM', 'Documentation', '▣', 'operational', 'Legal + lineage records', 'Versioned legal documents, architecture lineage and truth rules.'),
   m('status', 'SYSTEM', 'Status', '◇', 'operational', 'Local LIAM store', 'Live runtime truth: adapters, emergency state, ledger mode, connectivity.'),
-  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '171-requirement registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
+  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '175-requirement registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
   m('settings', 'SYSTEM', 'Settings', '⌁', 'operational', 'Local LIAM store', 'User-controlled preferences and data controls.')
 ];
 const byId = id => MODULES.find(x => x.id === id);
@@ -553,7 +553,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.68.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.69.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -587,17 +587,28 @@ function renderSettings() {
 
 
 /* ── Marketplace ─────────────────────────────────────────────────── */
+/* v1.69: LD packages card for the Marketplace workspace. */
+function ldPackagesCard(pk) {
+  const list = (pk && Array.isArray(pk.packages)) ? pk.packages : [];
+  return '<div class="facet-card"><h4>LD packages (' + list.length + ')</h4>' +
+    list.map(k => row(k.priceAud + ' A$*', '+' + k.totalLd + ' LD (' + k.ld + ' + ' + k.bonus + ' bonus) · ' + k.effectiveAudPerLd + ' per LD', '<button class="mini-btn" data-lpkg="' + k.id + '">Buy</button>')).join('') +
+    '<p class="empty-note">* notional A$ — SIMULATION, no real charge (billing compliance-locked).</p></div>';
+}
 async function renderMarket() {
   const j = await api('/api/market');
   const avs = await api('/api/avatars');
   const avatars = avs.ok ? avs.avatars : [];
   const eco = await api('/api/economy');
+  const pk = await api('/api/ld-packages');
   $('#main').innerHTML = head('SIMULATION MARKETPLACE', 'Marketplace', 'Fixed-price listings with LD escrow. Real-money settlement stays compliance-locked; LD mode: ' + (eco.mode || 'SIMULATION') + '.', '<span class="pill simulation">' + esc(eco.mode || 'SIMULATION') + '</span>') +
+  ldPackagesCard(pk) +
   `<div class="facet-card"><h4>Listings (${(j.listings || []).length})</h4>${(j.listings || []).map(l => row(l.price + ' LD', `<span style="color:${l.item.color}">${esc(l.item.name)}</span> <small>${l.item.rarity} R${l.item.rlevel} ${l.item.slot} · ${esc(l.seller)}</small>`, l.seller === 'Vendor' ? (avatars.length ? `<button class="mini-btn" data-buy="${l.id}">Buy</button>` : '') : `<button class="mini-btn danger" data-delist="${l.id}">Delist</button>`)).join('') || '<p class="empty-note">Empty.</p>'}</div>
   <div class="facet-card"><h4>List one of your items</h4>${avatars.length ? `<div class="input-line" style="margin-top:0"><select id="mkItem" class="chip">${avatars[0].inventory.map(i => `<option value="${i.id}">${esc(i.name)} (${i.rarity})</option>`).join('')}</select><input id="mkPrice" placeholder="price LD" style="max-width:110px"><button class="mini-btn" data-list="1">List</button></div>` : '<p class="empty-note">Forge an avatar first.</p>'}</div>`;
   $('#main').onclick = async e => {
     const b = e.target.closest('[data-buy]');
     if (b) { const r = await post('/api/market/buy', { listingId: b.dataset.buy, avatarId: avatars[0].id }); toast(r.ok ? 'Bought ' + r.item.name : (r.error || 'failed')); renderMarket(); return; }
+    const lp = e.target.closest('[data-lpkg]');
+    if (lp) { const r = await post('/api/command', { text: 'buy ld package ' + lp.dataset.lpkg }); toast(r.ok ? 'LD package bought (+LD credited)' : (r.reply || r.error || 'failed')); renderMarket(); return; }
     const d = e.target.closest('[data-delist]');
     if (d) { const r = await post('/api/market/delist', { listingId: d.dataset.delist }); toast(r.ok ? 'Delisted' : (r.error || 'failed')); renderMarket(); return; }
     const l = e.target.closest('[data-list]');
@@ -766,7 +777,7 @@ async function renderSpec() {
   if (!j.ok) { $('#main').innerHTML = head('SPEC', 'Spec', 'Compliance registry unavailable.'); return; }
   const c = j.coverage;
   const counts = c.counts;
-  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 171 requirements (168 master sections + 3 platform) with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
+  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 175 requirements (168 master sections + 7 platform) with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
   `<div class="stat-grid">
     <div class="stat-card"><p class="stat-label">LIVE</p><p class="stat-value">${counts.LIVE || 0}</p></div>
     <div class="stat-card"><p class="stat-label">PARTIAL</p><p class="stat-value">${counts.PARTIAL || 0}</p></div>
@@ -1245,7 +1256,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.68.0 · 171-REQUIREMENT COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.69.0 · 175-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

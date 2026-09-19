@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.68.0';
+const VERSION = '1.69.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -43,6 +43,7 @@ function freshState() {
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
     reminders: [], notifications: [], schedules: [],
     llm: { default: null, calls: 0 },   // v1.67 AI brain config (provider keys live encrypted in creds)
+    social: { verified: {} },           // v1.69 social connector verification evidence
     /* ── v1.64 specification systems ───────────────────────────── */
     stops: {},                       // §55 emergency stop scopes
     devices: [],                     // §40/§104 device trust + inventory
@@ -100,6 +101,7 @@ load();
 Object.assign(S, Object.assign(freshState(), S)); // backfill new fields on old stores
 S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }, S.economy);
 S.market = S.market || [];
+S.social = Object.assign({ verified: {} }, S.social);
 /* LD pools are explicit ledger accounts: a reward can only be paid from a pool
  * that was funded, and funding is an audited issuance from the LD Issuance
  * reserve. Nothing appears out of nowhere (§164). */
@@ -397,6 +399,48 @@ function llmResolveProvider(requested) {
   return null;
 }
 
+/* ── v1.69: social media connectors — legitimate interfaces only ─────
+ * Each connector uses the platform's official developer API with the
+ * owner's own credential (stored via the standard encrypted connect
+ * flow). No credential → truthful UNAVAILABLE with the developer-signup
+ * path. Nothing is ever simulated as posted. Post support follows each
+ * platform's real API surface; verify-only where an API cannot post. */
+const SOCIALS = [
+  { id: 'x', name: 'X (Twitter)', verifyUrl: 'https://api.twitter.com/2/users/me', postable: true,
+    signup: 'developer.x.com app + bearer token (tweet.read/write)', postUrl: 'https://api.twitter.com/2/tweets', cap: 280 },
+  { id: 'facebook', name: 'Facebook', verifyUrl: 'https://graph.facebook.com/v21.0/me', postable: true,
+    signup: 'developers.facebook.com app + Page access token (pages_manage_posts)', postUrl: 'https://graph.facebook.com/v21.0/me/feed', cap: 5000 },
+  { id: 'reddit', name: 'Reddit', verifyUrl: 'https://oauth.reddit.com/api/v1/me', postable: true,
+    signup: 'reddit.com/prefs/apps OAuth app', postUrl: 'https://oauth.reddit.com/api/submit', cap: 40000 },
+  { id: 'instagram', name: 'Instagram (Business)', verifyUrl: 'https://graph.facebook.com/v21.0/me', postable: false,
+    signup: 'Instagram Business account + Graph API token', reason: 'posting is a two-step media/publish flow tied to a Business account — connect + verify works today; posting lands after the Business account is attached' },
+  { id: 'linkedin', name: 'LinkedIn', verifyUrl: 'https://api.linkedin.com/v2/userinfo', postable: false,
+    signup: 'linkedin.com/developers app (openid profile, w_member_social)', reason: 'posting requires an approved community-marketing access tier on the developer app — verify works today' },
+  { id: 'tiktok', name: 'TikTok', verifyUrl: 'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name', postable: false,
+    signup: 'developers.tiktok.com app (User Info basics)', reason: 'the Content Posting API posts videos, not text — verify works today; video upload is a separate audited tool if you want it' }
+];
+const SOCIAL_POSTABLE = SOCIALS.filter(x => x.postable).map(x => x.id);
+function socialEntry(id) { return SOCIALS.find(x => x.id === String(id || '').toLowerCase()); }
+
+/* ── v1.69: chat-driven self-update from the audited public repo ─────
+ * check is low-risk read-only. apply is HIGH risk: the permission kernel
+ * queues an approval automatically; only an explicit owner approval lets
+ * repo files be written, every overwritten file is backed up first, and
+ * the ledger of what changed lands in the audit chain. Restart is always
+ * the owner's action — the platform never restarts itself. */
+const UPDATE_REPO_RAW = 'https://raw.githubusercontent.com/doomed689/WitForge/main/';
+const UPDATE_REPO_TREE = 'https://api.github.com/repos/doomed689/WitForge/git/trees/main?recursive=1';
+const UPDATE_SKIP = [/^data\//, /^\.git(\/|$)/, /(^|\/)platform\.json$/, /^node_modules(\/|$)/];
+const APP_ROOT_W = () => __dirname;
+function localVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version; } catch (e) { return '0.0.0'; }
+}
+function versionGt(a, b) {
+  const pa = String(a || '').split('.').map(Number), pb = String(b || '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) { const x = pa[i] || 0, y = pb[i] || 0; if (x !== y) return x > y; }
+  return false;
+}
+
 /* ── Adapters & tools: real execution only ────────────── */
 const ADAPTERS = [
   { id: 'sys', name: 'System Inspector', caps: [{ id: 'sys.read', risk: 'low', desc: 'OS/runtime/interface facts from the host process' }], state: 'AVAILABLE' },
@@ -409,6 +453,12 @@ const ADAPTERS = [
   { id: 'deepseek', name: 'DeepSeek (free grant on signup)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via DeepSeek' }], state: 'FREE KEY — say “connect deepseek with token <key>”' },
   { id: 'mistral', name: 'Mistral (free tier)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via Mistral' }], state: 'FREE KEY — say “connect mistral with token <key>”' },
   { id: 'ollama', name: 'Ollama (local open-source models)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'Runs on this machine at 127.0.0.1:11434 — no key, nothing leaves' }], state: 'LOCAL — install Ollama, “ollama pull llama3.2”' },
+  { id: 'x', name: 'X (Twitter) — official API', caps: [{ id: 'social.post', risk: 'high', desc: 'Post via your own developer bearer token' }], state: 'DEVELOPER KEY — developer.x.com, then “connect x with token <t>”' },
+  { id: 'facebook', name: 'Facebook — Graph API', caps: [{ id: 'social.post', risk: 'high', desc: 'Page post via your Page access token' }], state: 'DEVELOPER KEY — developers.facebook.com, then “connect facebook with token <t>”' },
+  { id: 'reddit', name: 'Reddit — official API', caps: [{ id: 'social.post', risk: 'high', desc: 'Submit via your OAuth app' }], state: 'DEVELOPER KEY — reddit.com/prefs/apps, then “connect reddit with token <t>”' },
+  { id: 'instagram', name: 'Instagram Business — Graph API', caps: [{ id: 'social.verify', risk: 'medium', desc: 'Verify your Business account identity' }], state: 'DEVELOPER KEY — Business account + token, then “connect instagram with token <t>”' },
+  { id: 'linkedin', name: 'LinkedIn — official API', caps: [{ id: 'social.verify', risk: 'medium', desc: 'Verify your member identity' }], state: 'DEVELOPER KEY — linkedin.com/developers, then “connect linkedin with token <t>”' },
+  { id: 'tiktok', name: 'TikTok — official API', caps: [{ id: 'social.verify', risk: 'medium', desc: 'Verify your user identity' }], state: 'DEVELOPER KEY — developers.tiktok.com, then “connect tiktok with token <t>”' },
   { id: 'exec', name: 'Allowlisted Executor', caps: [{ id: 'exec.run', risk: 'medium', desc: 'Bounded, shell:false allowlisted operations with timeouts and output caps' }], state: 'AVAILABLE' },
   { id: 'economy', name: 'LD Ledger (simulation)', caps: [{ id: 'economy.manage', risk: 'medium', desc: 'Double-entry simulation ledger; 100 LD = A$1.00 reference' }], state: 'AVAILABLE' },
   { id: 'arena', name: 'Arena Engine', caps: [{ id: 'arena.fight', risk: 'low', desc: 'Server-authoritative battles' }], state: 'AVAILABLE' },
@@ -751,6 +801,82 @@ const TOOLS = {
       if (S.llm) { S.llm.calls = (S.llm.calls || 0) + r.answers.length; save(); }
       return { providersAsked: ids, answers: r.answers.map(x => ({ provider: x.provider, model: x.model, latencyMs: x.latencyMs, reply: x.content })), failures: r.failures };
     } },
+  /* ── v1.69: social connectors (official APIs, owner credentials) ── */
+  'social.status': { cap: 'social.status', risk: 'low', verification: 'credential-store lookup + recorded verification evidence', run: async () => ({
+      connectors: SOCIALS.map(x => ({ id: x.id, name: x.name, postable: x.postable, reason: x.reason || null, configured: !!decryptToken(x.id), verified: !!(S.social.verified[x.id]), signup: x.signup })),
+      note: 'configured ≠ connected: say “verify <platform>” for a real API round trip; posting without a credential is refused, never simulated'
+    }) },
+  'social.verify': { cap: 'social.verify', risk: 'medium', verification: 'a real authenticated API round trip returning the account identity', run: async a => {
+      const sc = socialEntry(a.platform);
+      if (!sc) return { error: 'Unknown platform — known: ' + SOCIALS.map(x => x.id).join(', '), truthful: true };
+      const tok = decryptToken(sc.id);
+      if (!tok) return { error: sc.name + ' UNAVAILABLE — no credential stored (never faked). Create an app at ' + sc.signup + ', then say “connect ' + sc.id + ' with token <token>” and “verify ' + sc.id + '”.', truthful: true };
+      const r = await guardedFetch(sc.verifyUrl, { authorization: 'Bearer ' + tok });
+      if (!r.ok) return { error: 'Verify FAILED against ' + sc.name + ' (real API): ' + (r.error || 'HTTP ' + r.status), truthful: true };
+      let name = null; try { const j = JSON.parse(r.text); name = (j.data && (j.data.username || j.data.display_name)) || j.name || j.username || null; } catch (e) {}
+      S.social.verified[sc.id] = { ts: Date.now(), profile: name || 'authenticated' };
+      save(); audit('tool', 'SOCIAL VERIFY ' + sc.id + ' → ' + (name || 'authenticated'), 'system', { result: 'SUCCEEDED' });
+      return { platform: sc.id, profile: name || 'authenticated', verified: true, postable: sc.postable, note: sc.postable ? 'Say “post ' + sc.id + ' <text>” — posting is high-risk and approval-gated.' : (sc.reason || 'verify-only') };
+    } },
+  'social.post': { cap: 'social.post', risk: 'high', verification: 'the platform API acknowledges the post with an id/link', run: async a => {
+      const sc = socialEntry(a.platform);
+      if (!sc) return { error: 'Unknown platform — known: ' + SOCIALS.map(x => x.id).join(', '), truthful: true };
+      const tok = decryptToken(sc.id);
+      if (!tok) return { error: sc.name + ' UNAVAILABLE — no credential stored (never faked). Say “connect ' + sc.id + ' with token <token>” first; posting is never simulated.', truthful: true };
+      if (!sc.postable) return { error: sc.name + ' cannot be posted to through this tool yet: ' + (sc.reason || ''), truthful: true };
+      const text = String(a.text || '').trim();
+      if (!text) return { error: 'text required' };
+      if (text.length > sc.cap) return { error: sc.name + ' caps posts at ' + sc.cap + ' characters (yours: ' + text.length + ')', truthful: true };
+      if (!S.social.verified[sc.id]) return { error: 'Verify ' + sc.id + ' first (“verify ' + sc.id + '”) — posting requires a proven-live credential.', truthful: true };
+      let body = null, extraHeaders = {};
+      if (sc.id === 'x') body = JSON.stringify({ text });
+      if (sc.id === 'facebook') { extraHeaders = { 'content-type': 'application/x-www-form-urlencoded' }; body = 'message=' + encodeURIComponent(text); }
+      if (sc.id === 'reddit') {
+        if (!a.subreddit) return { error: 'reddit needs a subreddit: “post reddit <sub> | <title> | <text>”', truthful: true };
+        extraHeaders = { 'content-type': 'application/x-www-form-urlencoded' };
+        body = 'sr=' + encodeURIComponent(String(a.subreddit)) + '&kind=self&title=' + encodeURIComponent(String(a.title || 'Posted via WitForge')) + '&text=' + encodeURIComponent(text);
+      }
+      const r = await guardedFetch(sc.postUrl, Object.assign({ authorization: 'Bearer ' + tok }, extraHeaders), { method: 'POST', body });
+      if (!r.ok) return { error: 'Post FAILED against ' + sc.name + ' (real API): ' + (r.error || 'HTTP ' + r.status), truthful: true };
+      let ref = null; try { const j = JSON.parse(r.text); ref = (j.data && (j.data.id || j.data.tweet_id)) || (j.id ? ('t3_' + j.id) : (j.post_id || null)); } catch (e) {}
+      audit('tool', 'SOCIAL POST ' + sc.id + ' (' + text.length + ' chars) → ' + (ref || 'accepted'), 'user', { result: 'SUCCEEDED', risk: 'HIGH' });
+      return { platform: sc.id, posted: true, reference: ref, charCount: text.length };
+    } },
+  /* ── v1.69: self-update from the audited public repo ────────────── */
+  'update.check': { cap: 'update.check', risk: 'low', verification: 'local package.json vs the live repo main branch', run: async () => {
+      const lv = localVersion();
+      const r = await guardedFetch(UPDATE_REPO_RAW + 'package.json');
+      if (!r.ok) return { localVersion: lv, error: 'Could not read the remote version (real fetch failed): ' + r.error, truthful: true };
+      let rv = 'unknown'; try { rv = JSON.parse(r.text).version || 'unknown'; } catch (e) {}
+      return { localVersion: lv, remoteVersion: rv, upToDate: rv === lv, newer: versionGt(rv, lv), note: 'Say “update apply” to pull the newer tree — approval-gated, backed up, audited.' };
+    } },
+  'update.apply': { cap: 'update.apply', risk: 'high', verification: 'per-file sha256 recorded in audit; remote version must be strictly newer', run: async a => {
+      const lv = localVersion();
+      const head = await guardedFetch(UPDATE_REPO_RAW + 'package.json');
+      if (!head.ok) return { error: 'Update aborted — could not read the remote version: ' + head.error, truthful: true };
+      let rv = 'unknown'; try { rv = JSON.parse(head.text).version || 'unknown'; } catch (e) {}
+      if (!versionGt(rv, lv)) return { ok: false, upToDate: true, localVersion: lv, remoteVersion: rv, error: 'No newer version to apply (local ' + lv + ', remote ' + rv + '). Nothing was changed.', truthful: true };
+      const tree = await guardedFetch(UPDATE_REPO_TREE, { accept: 'application/vnd.github+json', 'user-agent': 'LIAM' });
+      if (!tree.ok) return { error: 'Update aborted — could not list the remote tree: ' + tree.error, truthful: true };
+      let blobs; try { blobs = JSON.parse(tree.text).tree || []; } catch (e) { return { error: 'Update aborted — bad tree payload', truthful: true }; }
+      const files = blobs.filter(b => b.type === 'blob' && (b.size || 0) <= 2000000 && !UPDATE_SKIP.some(re => re.test(b.path)));
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupDir = path.join(APP_ROOT_W(), 'data', 'update-backups', stamp);
+      const applied = [], skipped = [];
+      for (const f of files.slice(0, 200)) {
+        const target = path.resolve(APP_ROOT_W(), f.path);
+        if (!target.startsWith(APP_ROOT_W() + path.sep)) { skipped.push(f.path); continue; }
+        const raw = await guardedFetch(UPDATE_REPO_RAW + f.path.split('/').map(encodeURIComponent).join('/'));
+        if (!raw.ok) { skipped.push(f.path); continue; }
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        if (fs.existsSync(target)) { fs.mkdirSync(backupDir, { recursive: true }); fs.copyFileSync(target, path.join(backupDir, f.path.replace(/\//g, '__'))); }
+        fs.writeFileSync(target, raw.text);
+        applied.push({ path: f.path, sha256: crypto.createHash('sha256').update(raw.text).digest('hex'), bytes: Buffer.byteLength(raw.text) });
+      }
+      audit('update', 'SELF-UPDATE applied ' + applied.length + ' files ' + lv + ' → ' + rv + ' (backup: data/update-backups/' + stamp + ')', 'user', { result: 'SUCCEEDED', risk: 'HIGH' });
+      save();
+      return { ok: true, fromVersion: lv, toVersion: rv, applied: applied.length, skipped: skipped.length, backup: 'data/update-backups/' + stamp, files: applied.map(x => x.path).slice(0, 100), restartRequired: 'Restart is yours: say “update check” afterwards or run `node server.js` again. The platform never restarts itself.' };
+    } },
   /* ── v1.64: §124 mock adapter executed through the real pipeline ── */
   'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: (a, o) => {
       const ad = caps.MOCK_ADAPTERS.find(x => x.behaviour === (a.behaviour || 'succeed')) || caps.MOCK_ADAPTERS[0];
@@ -918,7 +1044,9 @@ const TOOL_SCOPES = {
   'account.configure': ['account'], 'account.disconnect': ['account'],
   'knowledge.write': ['task'], 'mock.echo': ['task'], 'economy.selftest': ['task'],
   'llm.status': ['task'], 'llm.chat': ['network', 'integration'], 'llm.verify': ['network', 'integration'],
-  'llm.ensemble': ['network', 'integration']
+  'llm.ensemble': ['network', 'integration'],
+  'social.status': ['task'], 'social.verify': ['network', 'integration'], 'social.post': ['network', 'integration'],
+  'update.check': ['task'], 'update.apply': ['task']
 };
 function toolScopes(toolId) {
   const id = String(toolId || '');
@@ -1476,8 +1604,9 @@ async function command(text) {
   if (low === 'orgs' || low === 'organisations') {
     return R(S.orgs.length ? 'Organisations:\n' + S.orgs.map(o => `• ${o.name} — ${o.members.length} member(s), ${o.teams.length} team(s), ${o.delegatedCapabilities.length} delegated cap(s)`).join('\n') : 'No organisations. Say “create org <name>”.');
   }
-  if ((m = low.match(/^plan (free|plus|pro|business|enterprise)$/))) {
+  if ((m = low.match(/^plan ([a-z][a-z-]*)$/))) {
     const r = subscribeCmd(m[1]);
+    if (!r.ok) return R((r.error || 'Unknown tier') + ' Available: ' + services.PLANS.map(p => p.id).join(', ') + ' (5 personal, 3 business).');
     const e = r.subscription.entitlements;
     return R(`Plan set to ${r.subscription.planName}. Entitlements: ${Object.entries(e).map(([k, v]) => k + '=' + v).join(', ')}. Premium controls are enforced server-side; billing stays locked until billing authority exists.`);
   }
@@ -1657,6 +1786,42 @@ async function command(text) {
 
   if (low.includes('github')) { const r = await runTool('github.status', {}, {}); return r.ok ? R('GitHub reachable.') : R(r.evidence ? r.evidence.error : r.error); }
 
+  /* v1.69: LD packages, social connectors, self-update. */
+  if (low === 'ld packages' || low === 'packages') {
+    const L = ldPackagesList();
+    return R('LD packages (' + L.mode + '):\n' + L.packages.map(k => '• ' + k.id + ' — ' + k.ld + ' LD + ' + k.bonus + ' bonus = ' + k.totalLd + ' LD for A$' + k.priceAud + ' (' + k.effectiveAudPerLd + ' per LD)').join('\n') + '\nBuy with “buy ld package <id>”. ' + L.note);
+  }
+  if ((m = low.match(/^buy ld package ([a-z0-9-]+)$/))) {
+    const r = buyLdPackageCmd(m[1]);
+    return r.ok ? R('Package “' + r.package + '” credited: +' + r.totalLd + ' LD (' + r.bonusLd + ' bonus) for a notional A$' + r.priceAud + ' — ' + r.note + ' Balance: ' + r.balance + ' LD.') : R(r.error);
+  }
+  if (low === 'social' || low === 'social status' || low === 'connectors social') {
+    const r = await runTool('social.status', {}, {});
+    return R(r.ok ? 'Social connectors (official APIs, your credentials):\n' + r.result.connectors.map(c => '• ' + c.id + (c.postable ? ' (postable)' : ' (verify-only)') + ' — ' + (c.verified ? 'VERIFIED' : c.configured ? 'configured, run “verify ' + c.id + '”' : 'not connected → ' + c.signup)).join('\n') + '\n' + r.result.note : (r.error || 'status unavailable'));
+  }
+  if ((m = low.match(/^verify (x|twitter|facebook|instagram|linkedin|reddit|tiktok)$/))) {
+    const r = await runTool('social.verify', { platform: m[1] === 'twitter' ? 'x' : m[1] }, {});
+    return r.ok ? R('VERIFIED via real API: ' + r.result.platform + ' → ' + r.result.profile + '. ' + r.result.note) : R(r.error);
+  }
+  if ((m = q.match(/^post (x|twitter|facebook|reddit)\s+([\s\S]+)$/i))) {
+    const plat = m[1].toLowerCase() === 'twitter' ? 'x' : m[1].toLowerCase();
+    const args = { platform: plat, text: m[2].trim() };
+    if (plat === 'reddit') { const parts = m[2].split('|').map(x => x.trim()); if (parts.length >= 3) { args.subreddit = parts[0].replace(/^r\//i, ''); args.title = parts[1]; args.text = parts.slice(2).join(' | '); } }
+    const prior = S.approvals.find(a => a.cap === 'social.post' && a.status === 'approved');
+    const r = await runTool('social.post', args, prior ? { approvalId: prior.id } : {});
+    if (r && r.needsApproval) return R('Posting to ' + plat + ' is public and high-risk — approval queued: ' + r.needsApproval + '. Say “approve ' + r.needsApproval + '” then repeat the post command.');
+    return r.ok ? R('Posted to ' + r.result.platform + (r.result.reference ? ' (ref: ' + r.result.reference + ')' : '') + '. Visible publicly — that is the point, and why it was approval-gated.') : R(r.error || 'The post did not go through.');
+  }
+  if (low === 'update check' || low === 'check for updates') {
+    const r = await runTool('update.check', {}, {});
+    return r.ok ? R(r.result.upToDate ? 'Up to date: local ' + r.result.localVersion + ' = remote ' + r.result.remoteVersion + '.' : (r.result.newer ? 'Update available: local ' + r.result.localVersion + ' → remote ' + r.result.remoteVersion + '. Say “update apply” (approval-gated, backed up, audited).' : JSON.stringify(r.result))) : R(r.error || 'Update check failed.');
+  }
+  if (low === 'update apply' || low === 'update now' || low === 'self update') {
+    const r = await runTool('update.apply', {}, {});
+    if (r && r.needsApproval) return R('Self-update is high-risk (it rewrites this app from the audited repo) — approval queued: ' + r.needsApproval + '. Say “approve ' + r.needsApproval + '” then “update apply” again.');
+    if (r && r.upToDate) return R(r.error);
+    return r.ok ? R('Self-update applied: ' + r.result.fromVersion + ' → ' + r.result.toVersion + '. ' + r.result.applied + ' files written (sha256 in audit), ' + r.result.skipped + ' skipped. Backup: ' + r.result.backup + '. ' + r.result.restartRequired) : R(r.error || 'Update failed.');
+  }
   /* v1.67: the AI brain — explicit asks, provider selection, verification.
    * Matched late so rule-based intents keep priority: the router is the
    * audited surface; the LLM advises and answers, it does not execute. */
@@ -1923,6 +2088,41 @@ function ldMarketCmd(ld, side, opts) {
     { action: 'ld.' + q.side, decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
   save();
   return { ok: true, order, quote: q, balance: ldBalance(owner), simulation: true, note: 'Recorded in the simulation ledger. Real-money LD trading stays compliance-locked.' };
+}
+/* ── v1.69: LD packages in the marketplace ───────────────────────────
+ * Bundled LD at fixed A$ price points; the bonus improves the effective
+ * rate over the flat A$0.01/LD face. SIMULATION only: the movement is a
+ * real double-entry posting, the A$ figure is a recorded notional, and
+ * no charge is created (billing stays compliance-locked). */
+const LD_PACKAGES = [
+  { id: 'starter', ld: 500,   bonus: 0,    priceAud: 5   },
+  { id: 'value',   ld: 1000,  bonus: 200,  priceAud: 10  },
+  { id: 'pro',     ld: 2500,  bonus: 600,  priceAud: 25  },
+  { id: 'elite',   ld: 5000,  bonus: 2000, priceAud: 50  },
+  { id: 'founder', ld: 12000, bonus: 5000, priceAud: 100 }
+];
+function ldPackagesList() {
+  return { mode: S.economy.realMode ? 'REAL' : 'SIMULATION', packages: LD_PACKAGES.map(k => ({
+    id: k.id, ld: k.ld, bonus: k.bonus, totalLd: k.ld + k.bonus, priceAud: k.priceAud,
+    effectiveAudPerLd: Math.round((k.priceAud / (k.ld + k.bonus)) * 100000) / 100000,
+    note: 'SIMULATION — no real charge; billing stays compliance-locked'
+  })), note: 'Packages are also listed in the Marketplace workspace.' };
+}
+function buyLdPackageCmd(pkgId, wallet) {
+  const k = LD_PACKAGES.find(x => x.id === String(pkgId || '').toLowerCase());
+  if (!k) return { ok: false, error: 'Unknown LD package — available: ' + LD_PACKAGES.map(x => x.id).join(', ') };
+  if (S.economy.realMode) return { ok: false, blocked: 'compliance', error: 'Real-money LD packages are COMPLIANCE-LOCKED (see ROADMAP-REAL-MONEY.md). Nothing was charged.' };
+  const owner = wallet || ownerWallet();
+  const total = k.ld + k.bonus;
+  const memo = `SIMULATION LD package ${k.id}: ${k.ld} LD + ${k.bonus} bonus = ${total} LD for A$${k.priceAud.toFixed(2)} (notional; no charge)`;
+  const post = ledgerPost([{ account: owner, delta: total }, { account: 'LD Issuance', delta: -total }], memo,
+    { actor: owner, reason: 'ld package ' + k.id, source: 'LD Issuance', destination: owner, kind: 'ld-package' });
+  if (!post.ok) return post;
+  const order = { id: nid('ldo'), ts: Date.now(), side: 'buy', ld: total, aud: k.priceAud, package: k.id, bonusLd: k.bonus, rateAudPerLD: Math.round((k.priceAud / total) * 100000) / 100000, mode: 'SIMULATION', wallet: owner, settled: true };
+  S.ldOrders.unshift(order);
+  audit('economy', memo, 'user', { action: 'ld.package', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, package: k.id, totalLd: total, bonusLd: k.bonus, priceAud: k.priceAud, balance: ldBalance(owner), simulation: true, note: 'Recorded in the simulation ledger. No real charge exists.' };
 }
 /* Creating anything costs LD: forging is priced by band, provisioning fills an
  * empty required slot at Common price, pets and merges have their own price. */
@@ -2533,7 +2733,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
@@ -2717,6 +2917,7 @@ module.exports = {
   EMERGENCIES, setEmergency, grant, revoke, permitted,
   createApproval, decideApproval, approved,
   chatFallback, llmRegistry: () => llm.PROVIDERS,
+  buyLdPackageCmd, ldPackagesList, LD_PACKAGES, SOCIALS,
   requestHumanStep, resolveHumanStep, consumeHumanStep, cancelHumanStep, HUMAN_STEP_KINDS,
   humanSteps: () => S.humanSteps.slice(0, 100),
   ADAPTERS, TOOLS, runTool, guardedFetch,

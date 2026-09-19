@@ -132,7 +132,7 @@ const run = (t, a) => P.runTool(t, a || {}, {});
 
   /* spec coverage + selftest */
   const comp = P.compliance();
-  ok(comp.total === 171, 'spec registry has 171 requirements (168 master + 3 platform)');
+  ok(comp.total === 175, 'spec registry has 175 requirements (168 master + 7 platform)');
   const stt = P.selftestAll();
   /* §126: four truthful states — no FAIL is required; WARNING/NOT_TESTED are
    * honest statements about integrations that genuinely are not connected. */
@@ -346,6 +346,40 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   const fb = await P.chatFallback('what is 2+2?');
   ok(fb && fb.ok === true && fb.kind === 'ai' && fb.provider === 'ollama', 'chatFallback answers through the LLM when one is configured');
   if (!usingReal) fake.close();
+
+  /* ── v1.69: plans 5+3, LD packages, social connectors, self-update ── */
+  const servicesMod = require('./platform-services.js');
+  ok(servicesMod.PLANS.length === 8 && servicesMod.plansFor('personal').length === 5 && servicesMod.plansFor('business').length === 3, 'plans reshaped to 5 personal + 3 business');
+  ok(servicesMod.planById('ultra') && servicesMod.planById('ultra').rank === 4 && !servicesMod.planById('enterprise-max'), 'ultra added at rank 4; enterprise-max retired');
+  const pkg = P.ldPackagesList();
+  ok(pkg.packages.length === 5 && pkg.packages.every(k => k.totalLd === k.ld + k.bonus), 'five LD packages with correct totals');
+  const sumPre = Object.values(P.state.ledger.accounts).reduce((a, v) => a + v, 0);
+  const bp = P.buyLdPackageCmd('value');
+  ok(bp.ok && bp.totalLd === 1200 && bp.bonusLd === 200 && bp.simulation === true, 'buying a package credits ld+bonus and labels SIMULATION');
+  const sumPost = Object.values(P.state.ledger.accounts).reduce((a, v) => a + v, 0);
+  ok(sumPost === sumPre, 'ledger sum invariant holds across an LD package purchase');
+  ok(!P.buyLdPackageCmd('mega').ok, 'an unknown package is refused');
+  const bpChat = await P.command('buy ld package starter');
+  ok(bpChat && bpChat.ok && /starter/.test(bpChat.reply), 'chat buys an LD package');
+  const soc = await P.runTool('social.status', {}, {});
+  ok(soc.result.connectors.length === 6 && soc.result.connectors.every(c => c.configured === false), 'six social connectors listed, none configured (truthful)');
+  const sp = await P.runTool('social.post', { platform: 'x', text: 'hello' }, {});
+  ok(sp.state === 'WAITING_FOR_APPROVAL' && sp.needsApproval, 'posting is high-risk: approval queued before anything runs');
+  P.decideApproval(sp.needsApproval, 'approve');
+  const sp2 = await P.runTool('social.post', { platform: 'x', text: 'hello' }, { approvalId: sp.needsApproval });
+  ok(sp2.ok === false && /connect x with token/.test(sp2.error), 'posting without a credential is refused with the connect path, never simulated');
+  const sv = await P.runTool('social.verify', { platform: 'tiktok' }, {});
+  ok(sv.ok === false && /developers\.tiktok\.com/.test(sv.error), 'verify without a credential names the developer-signup path');
+  const ip = await P.runTool('social.post', { platform: 'instagram', text: 'x' }, {});
+  ok(ip.ok === false && ip.error.length > 10, 'instagram posting reports its honest limitation');
+  const pkgVersion = require('./package.json').version;
+  const uc = await P.runTool('update.check', {}, {});
+  ok(uc.evidence && uc.evidence.localVersion === pkgVersion, 'update.check reports the true local version (network-independent)');
+  const ua1 = await P.runTool('update.apply', {}, {});
+  ok(ua1.state === 'WAITING_FOR_APPROVAL' && ua1.needsApproval, 'self-update is high-risk: approval queued before anything is touched');
+  P.decideApproval(ua1.needsApproval, 'approve');
+  const ua2 = await P.runTool('update.apply', {}, {});
+  ok(ua2.ok === false && (ua2.upToDate === true || !!ua2.error), 'approved self-update refuses to downgrade/replace without a strictly newer remote — nothing was changed');
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
