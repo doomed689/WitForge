@@ -1,6 +1,7 @@
 # LIAM Status
 
-- **App:** LIAM Control Centre **v1.74.1** — local-first, truth-stated (Free baseline restored under the v1.74 repriced ladder; includes the v1.73.1 OpenRouter default-model repair)
+- **App:** LIAM Control Centre **v1.75.0** — local-first, truth-stated (Global Trust & Compliance Charter registered atop the legal set; includes the v1.73.1 OpenRouter repair)
+- **v1.75 surface:** the Charter (`LEGAL-GLOBAL-TRUST-CHARTER.md`, legal id `charter`) — decentralized, worldwide, bound by no single jurisdiction; self-bound by the Prime Covenant to be correct, honest, trustworthy; user rights, enforcement instruments, additive amendment (§94)
 - **v1.74 surface:** Plans — Free (A$0) baseline + 5 paid personal tiers from A$9/mo (plus · pro · elite · ultra · apex A$299) and 2 business tiers from A$30/mo (business · business-plus A$99); enterprise retired; prices stay reference labels, billing compliance-locked
 - **Local:** `npm run dev` (or `node server.js`) → http://localhost:8787 (`PORT` overrides)
 - **Hosted preview:** https://doomed689.github.io/WitForge/ (static; offline banner when no backend)

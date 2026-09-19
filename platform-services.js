@@ -347,7 +347,7 @@ function orgAuthorityNote() { return 'Organisation authority never automatically
  * (see bill()). Entitlements are enforced server-side by requireEntitlement(). */
 const PLANS = [
   /* v1.74: paid ladder reshaped — five personal tiers from A$9, two business
-   * from A$30; the A$499 'enterprise' tier was retired. v1.74.1: the $0 Free
+   * from A$30; the A$499 'enterprise' tier was retired. v1.75.0: the $0 Free
    * baseline is restored (owner decision) — it is an entitlement baseline,
    * never a charge, same as every tier while billing is compliance-locked. */
   /* ── personal ───────────────────────────────────────────────────── */
@@ -598,9 +598,9 @@ function otelExport(state) {
   const ns = ms => ms * 1e6;
   return {
     resourceSpans: [{
-      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.74.1' } }] },
+      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.75.0' } }] },
       scopeSpans: [{
-        scope: { name: 'witforge.platform', version: '1.74.1' },
+        scope: { name: 'witforge.platform', version: '1.75.0' },
         spans: (state.spans || []).map(s => ({
           traceId: (s.cid || s.id).padEnd(32, '0').slice(0, 32),
           spanId: s.id.replace(/[^a-f0-9]/gi, '').padEnd(16, '0').slice(0, 16),
@@ -648,7 +648,7 @@ function selftestSummary(checks) {
 function releaseMeta(opts) {
   opts = opts || {};
   return {
-    version: opts.version || '1.74.1',
+    version: opts.version || '1.75.0',
     buildDate: opts.buildDate || now(),
     sourceRevision: opts.sourceRevision || 'unknown (no VCS metadata available)',
     dependencyState: opts.dependencyState || 'zero runtime dependencies; Node built-ins only',

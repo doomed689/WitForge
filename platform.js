@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.74.1';
+const VERSION = '1.75.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -76,6 +76,7 @@ function seedLegal() {
   const d = '2026-09-18';
   const mk = (id, title, sum) => ({ id, title, version: '1.0.0', effective: d, status: 'RECORD — not legal advice', summary: sum });
   return [
+    mk('charter', 'Global Trust & Compliance Charter', 'Constitutional instrument. Decentralized and global; bound by no single jurisdiction; self-bound by one covenant with every user — be correct, be honest, be trustworthy. Full text: LEGAL-GLOBAL-TRUST-CHARTER.md.'),
     mk('terms', 'Terms of Use', 'Local-first platform; user responsibility for authorized actions.'),
     mk('privacy', 'Privacy Policy', 'All data local; export/delete available; no telemetry; no PII required.'),
     mk('aup', 'Acceptable Use Policy', 'No unauthorized external action; connectors require real authorization.'),

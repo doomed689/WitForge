@@ -1,4 +1,10 @@
-# LIAM · v1.74.1 — subscriptions: free baseline + 5 personal tiers from A$9, 2 business from A$30
+# LIAM · v1.75 — the Global Trust & Compliance Charter
+
+**v1.75:** the legal register gains its constitutional instrument —
+`LEGAL-GLOBAL-TRUST-CHARTER.md`. WitForge is decentralized and global: bound by
+no single jurisdiction, and self-bound by one covenant with every user — **be
+correct, be honest, be trustworthy.** Versioned and additive like every legal
+record (§94); the register now holds 21 records.
 
 **v1.74.1:** the Free (A$0) baseline is back by owner decision — it sits under
 the paid ladder as an entitlement baseline, never a charge.
