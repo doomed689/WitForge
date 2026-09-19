@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.72.0';
+const VERSION = '1.73.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -45,6 +45,7 @@ function freshState() {
     llm: { default: null, calls: 0 },   // v1.67 AI brain config (provider keys live encrypted in creds)
     social: { verified: {} },           // v1.69 social connector verification evidence
     proposals: [],                      // v1.71 AI-proposed commands awaiting the owner's "do <id>"
+    adCampaigns: [],                    // v1.73 advertising agent campaigns (owner's channels only)
     /* ── v1.64 specification systems ───────────────────────────── */
     stops: {},                       // §55 emergency stop scopes
     devices: [],                     // §40/§104 device trust + inventory
@@ -104,6 +105,7 @@ S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }
 S.market = S.market || [];
 S.social = Object.assign({ verified: {} }, S.social);
 S.proposals = S.proposals || [];
+S.adCampaigns = S.adCampaigns || [];
 /* LD pools are explicit ledger accounts: a reward can only be paid from a pool
  * that was funded, and funding is an audited issuance from the LD Issuance
  * reserve. Nothing appears out of nowhere (§164). */
@@ -432,6 +434,22 @@ function markProposalExecuted(id) {
   audit('approval', `Proposal ${id} executed by owner: ${pr.command}`, 'user', { step: id });
   save();
   return { ok: true };
+}
+
+/* ── v1.73: advertising agent — campaigns for the owner's own channels ─
+ * The AUTONOMOUS part is the creative work: the brain drafts the copy and
+ * the agent expands it into a rate-capped schedule. Dispatch is bound by
+ * three walls: only channels the owner connected AND verified through
+ * official APIs, one explicit campaign-level approval before anything is
+ * sent, and hard per-platform rate caps. Mass unsolicited advertising
+ * ("post anywhere, to anyone, by any means") is deliberately NOT built:
+ * it would breach platform terms, the AU Spam Act 2003 and the platform's
+ * own AUP. This agent amplifies the owner's voice on the owner's channels. */
+const AD_RATE_CAPS = { x: 3, facebook: 2, reddit: 2, instagram: 0, linkedin: 0, tiktok: 0 };
+const AD_CAMPAIGN_MAX_POSTS = 12;
+const AD_POSTABLE = Object.keys(AD_RATE_CAPS).filter(k => AD_RATE_CAPS[k] > 0);
+function adCampaignsList() {
+  return (S.adCampaigns || []).slice(0, 20).map(c => ({ id: c.id, name: c.name, status: c.status, platforms: c.platforms, variants: c.variants.length, queue: c.queue.length, sent: c.results.filter(r => r.ok).length }));
 }
 
 /* ── v1.69: social media connectors — legitimate interfaces only ─────
@@ -1274,6 +1292,66 @@ async function command(text) {
   if ((m = low.match(/^connect (proton)(?: .*)?$/)) || low === 'connect proton') {
     return R('Proton publishes NO public payment/wallet merchant API, so a real integration cannot exist. I will not simulate one. Proton connector state stays “NO PUBLIC API”. For receiving real payments, use Stripe: “connect stripe with token sk_…”, then “verify stripe”.');
   }
+  /* v1.73: advertising agent — drafts autonomously, dispatches gated. */
+  if (low === 'ad campaigns') {
+    const L = adCampaignsList();
+    return R(L.length ? 'Ad campaigns (your channels only, approval-gated dispatch):\n' + L.map(c => '• ' + c.id + ' “' + c.name + '” [' + c.status + '] ' + c.platforms.join(',') + ' · ' + c.variants + ' variants · ' + c.queue + ' queued · ' + c.sent + ' sent').join('\n') + '\nDispatch: “ad dispatch <id>” (one approval per campaign; ≤1 post/platform/dispatch).' : 'No campaigns yet. Create one: ad campaign "Launch" on x, facebook: <brief> — the agent drafts the variants.');
+  }
+  if ((m = q.match(/^ad campaign "([^"]{1,60})"\s+on\s+([a-z, ]+?):\s*([\s\S]+)$/i))) {
+    const pls = m[2].split(/[ ,]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+    const bad = pls.find(p => !(AD_RATE_CAPS[p] > 0));
+    if (bad) return R('“' + bad + '” is not postable through official APIs yet. Postable: ' + AD_POSTABLE.join(', ') + ' (instagram/linkedin/tiktok are verify-only — connect + verify works today).');
+    const brief = m[3].trim();
+    const c = { id: nid('adc'), name: m[1], brief: brief.slice(0, 300), platforms: pls, variants: [], queue: [], results: [], status: 'draft', ts: Date.now() };
+    const caps = pls.map(p => p + '≤' + AD_RATE_CAPS[p] + ' chars-none').join(', ');
+    const r = await runTool('llm.chat', { prompt: 'Draft 3 short distinct advertising post variants for this campaign. Number them 1. 2. 3. Keep each under 200 characters, no hashtags spam, one may include a call to action.\nCampaign: ' + m[1] + '\nBrief: ' + brief, maxTokens: 400 }, {});
+    if (r.ok) {
+      const texts = String(r.result.reply || '').split('\n').map(l => l.replace(/^\s*\d+[).]\s*/, '').trim()).filter(l => l.length > 3);
+      c.variants = texts.slice(0, 3);
+      c.draftedBy = r.result.provider + ' · ' + r.result.model;
+    }
+    if (!c.variants.length) { c.variants = [brief]; c.draftedBy = 'fallback (no AI provider answered)'; }
+    S.adCampaigns.unshift(c); save();
+    audit('economy', 'AD CAMPAIGN created ' + c.id + ' “' + c.name + '” → ' + pls.join(',') + ' (' + c.variants.length + ' variants)', 'user', {});
+    return R('📋 Agent drafted “' + c.name + '” (' + c.id + '), ' + c.variants.length + ' variants [' + c.draftedBy + ']:\n' + c.variants.map((v, i) => (i + 1) + '. ' + v).join('\n') + '\nNext: “ad schedule ' + c.id + '”. Walls: your connected+verified accounts only · one campaign approval before dispatch · rate-capped (≤1 post/platform/dispatch) — this agent amplifies your voice on your channels; it does not blast unsolicited ads anywhere.');
+  }
+  if ((m = low.match(/^ad schedule (adc\w+)$/))) {
+    const c = S.adCampaigns.find(x => x.id === m[1]);
+    if (!c) return R('No campaign ' + m[1] + '. “ad campaigns” lists them.');
+    if (c.status !== 'draft') return R('Campaign ' + c.id + ' is ' + c.status + ' — only drafts can be scheduled.');
+    const variants = c.variants.length ? c.variants : [c.brief];
+    let queue = [];
+    for (const p of c.platforms) variants.slice(0, AD_RATE_CAPS[p] || 0).forEach((v, i) => queue.push({ platform: p, text: String(v).slice(0, 400), slot: i + 1 }));
+    queue = queue.slice(0, AD_CAMPAIGN_MAX_POSTS);
+    c.queue = queue; c.status = 'scheduled'; save();
+    return R('Campaign “' + c.name + '” scheduled: ' + queue.length + ' rate-capped posts. Each “ad dispatch ' + c.id + '” sends at most ONE post per platform — you stay in the loop, platforms stay respected.');
+  }
+  if ((m = low.match(/^ad dispatch (adc\w+)$/))) {
+    const c = S.adCampaigns.find(x => x.id === m[1]);
+    if (!c) return R('No campaign ' + m[1] + '.');
+    if (c.status === 'completed') return R('Campaign ' + c.id + ' is completed — nothing left in the queue.');
+    if (c.status !== 'scheduled') return R('Schedule it first: “ad schedule ' + c.id + '”.');
+    const notReady = c.platforms.filter(p => !decryptToken(p) || !S.social.verified[p]);
+    if (notReady.length) return R('Refused — these channels are not connected+verified: ' + notReady.join(', ') + '. For each: “connect ' + notReady[0] + ' with token <your-token>” then “verify ' + notReady[0] + '”. The agent only ever uses your own authorized accounts — never any other source.');
+    const prior = S.approvals.find(a => a.cap === 'social.post' && a.status === 'approved' && String(a.desc || '').includes(c.id));
+    if (!prior) {
+      const ap = createApproval('social.post', 'Dispatch ad campaign ' + c.id + ' “' + c.name + '” to ' + c.platforms.join(', '));
+      return R('Dispatch is public and irreversible — one approval covers this whole campaign: say “approve ' + ap.id + '” then “ad dispatch ' + c.id + '” again.');
+    }
+    const sent = [], failed = [];
+    for (const p of c.platforms) {
+      const item = c.queue.find(q => q.platform === p);
+      if (!item) continue;
+      const r = await runTool('social.post', { platform: p, text: item.text }, { approvalId: prior.id });
+      c.results.push({ ts: Date.now(), platform: p, text: item.text, ok: !!r.ok, ref: (r.result && r.result.reference) || null, error: r.error || null });
+      if (r.ok) sent.push(p + (r.result.reference ? ' (' + r.result.reference + ')' : '')); else failed.push(p + ' — ' + String(r.error || 'failed').slice(0, 90));
+      c.queue = c.queue.filter(q => q !== item);
+    }
+    c.status = c.queue.length ? 'scheduled' : 'completed';
+    audit('economy', 'AD DISPATCH ' + c.id + ': ' + sent.length + ' sent, ' + failed.length + ' failed, ' + c.queue.length + ' remain', 'user', { result: failed.length && !sent.length ? 'FAILED' : 'SUCCEEDED', risk: 'HIGH' });
+    save();
+    return R('Dispatched “' + c.name + '”: ' + (sent.join(', ') || 'none sent') + (failed.length ? '\nFailed (real platform responses, reported not faked): ' + failed.join('; ') : '') + '\n' + c.queue.length + ' posts remain — “ad dispatch ' + c.id + '” sends the next round.');
+  }
   /* v1.72: one-glance operational briefing (all local state, instant). */
   if (low === 'briefing' || low === 'brief' || low === 'standup') {
     const steps = (S.humanSteps || []).filter(h => h.status === 'pending');
@@ -1287,6 +1365,8 @@ async function command(text) {
     L2.push('AI proposals pending: ' + props.length + (props.length ? ' → ' + props.map(p2 => p2.id + ' “' + p2.command + '”').join(', ') : ''));
     L2.push('Approvals pending: ' + pend.length + (pend.length ? ' → ' + pend.map(a => a.id + ' (' + a.desc + ')').join(', ') : ''));
     L2.push('Capabilities expired: ' + expired.length + (expired.length ? ' → ' + expired.join(', ') + ' (auto-refresh on next use)' : ''));
+    const ads = (S.adCampaigns || []);
+    L2.push('Ad campaigns: ' + ads.filter(c => c.status === 'scheduled').length + ' scheduled · ' + ads.filter(c => c.status === 'completed').length + ' completed');
     L2.push('Say “update check” for release status · “help” for everything runnable.');
     return R(L2.join('\n'));
   }
@@ -2875,7 +2955,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“propose <question>” · “do <id>” — the AI proposes a command, you run it (§168)', '“local models” · “local pull qwen2.5:0.5b” — manage your own AI models from chat', '“briefing” — one-glance status: steps, proposals, approvals, capabilities, modes', '“ask about <url>” — fetch a public page and summarize it with the brain', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“propose <question>” · “do <id>” — the AI proposes a command, you run it (§168)', '“local models” · “local pull qwen2.5:0.5b” — manage your own AI models from chat', '“briefing” — one-glance status: steps, proposals, approvals, capabilities, modes', '“ad campaign \<name\> on x, facebook: \<brief\>” — the agent drafts, schedules and (approval-gated) dispatches to YOUR channels', '“ask about <url>” — fetch a public page and summarize it with the brain', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },

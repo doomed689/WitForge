@@ -48,11 +48,11 @@ step('version identifiers agree across the tree', () => {
   if (coverage && coverage[1] !== pkg.version) throw new Error('spec-coverage.js ' + coverage[1] + ' ≠ package.json ' + pkg.version);
 });
 
-step('the specification registry covers the 168 master sections + 7 platform requirements', () => {
+step('the specification registry covers the 168 master sections + 8 platform requirements', () => {
   delete require.cache[require.resolve(path.join(ROOT, 'spec-coverage.js'))];
   const cov = require(path.join(ROOT, 'spec-coverage.js'));
   const rows = cov.SECTIONS || cov;
-  if (rows.length !== 175) throw new Error('registry has ' + rows.length + ' sections, expected 175');
+  if (rows.length !== 176) throw new Error('registry has ' + rows.length + ' sections, expected 176');
   const bad = rows.filter(r => !['LIVE', 'PARTIAL', 'EXTERNAL', 'LOCKED', 'POLICY'].includes(r.status));
   if (bad.length) throw new Error('unknown status on §' + bad.map(b => b.n).join(', §'));
 });

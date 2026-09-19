@@ -1,6 +1,6 @@
 # WitForge — Installation & Operations Validation
 
-**Applies to:** WitForge `1.72.0` (engagement + owner-protection build).
+**Applies to:** WitForge `1.73.0` (engagement + owner-protection build).
 **Scope:** this document is the §128 installation-validation record. Every command
 below was executed against this tree before it was written. Commands that were not
 run are marked as such — nothing here is claimed on faith.
@@ -155,10 +155,10 @@ Expected results on this tree (Node v20.20.2):
 |---|---|---|
 | `spec-test.js` | 93 | 0 |
 | `adversarial-test.js` | 78 | 0 |
-| `platform-test.js` | 158 | 0 |
+| `platform-test.js` | 166 | 0 |
 | `arena-test.js` | 28 | 0 |
 | `smoke-test.js` | 57 | 0 |
-| **total** | **531** | **0** |
+| **total** | **539** | **0** |
 
 Tests are isolated: they create their own temporary data directories and never touch a live `data/` store.
 

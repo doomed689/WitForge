@@ -127,7 +127,8 @@ const REQUIREMENTS = [
   { id: 'P-LDPKG', s: 173, area: 'Economy', text: 'LD packages are purchasable in-app (chat + marketplace) with double-entry postings', test: () => has('platform.js', 'LD_PACKAGES') && has('platform.js', 'buy ld package') && has('server.js', '/api/ld-packages') },
   { id: 'P-SELFU', s: 174, area: 'Authority', text: 'Chat self-update is approval-gated with backups and per-file sha256 audit', test: () => has('platform.js', "'update.apply'") && has('platform.js', 'update-backups') && has('platform.js', 'sha256') },
   { id: 'P-SOCIAL', s: 175, area: 'Integration', text: 'Social connectors ride official developer APIs with owner credentials and never simulate posts', test: () => has('platform.js', 'SOCIALS') && has('platform.js', "'social.post'") && has('platform.js', 'never simulated') },
-  { id: 'P-CONSENSUS', s: 171, area: 'Core', text: 'AI brain ensembles providers and synthesizes consensus on request', test: () => has('llm.js', 'ensemble') && has('platform.js', 'ask consensus') }
+  { id: 'P-CONSENSUS', s: 171, area: 'Core', text: 'AI brain ensembles providers and synthesizes consensus on request', test: () => has('llm.js', 'ensemble') && has('platform.js', 'ask consensus') },
+  { id: 'P-ADAGENT', s: 176, area: 'Integration', text: 'Advertising agent drafts autonomously but dispatches only to owner-verified channels, approval-gated and rate-capped', test: () => has('platform.js', 'AD_RATE_CAPS') && has('platform.js', 'ad dispatch') && has('platform.js', 'never any other source') }
 ];
 const results = REQUIREMENTS.map(r => Object.assign({}, r, probe(r.id, r.test), { test: undefined }));
 const bySection = {};

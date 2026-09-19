@@ -60,7 +60,7 @@ const MODULES = [
   m('notifications', 'SYSTEM', 'Notifications', '✦', 'operational', 'Local LIAM store', 'Local notification centre fed by audit events.'),
   m('documentation', 'SYSTEM', 'Documentation', '▣', 'operational', 'Legal + lineage records', 'Versioned legal documents, architecture lineage and truth rules.'),
   m('status', 'SYSTEM', 'Status', '◇', 'operational', 'Local LIAM store', 'Live runtime truth: adapters, emergency state, ledger mode, connectivity.'),
-  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '175-requirement registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
+  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '176-requirement registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
   m('settings', 'SYSTEM', 'Settings', '⌁', 'operational', 'Local LIAM store', 'User-controlled preferences and data controls.')
 ];
 const byId = id => MODULES.find(x => x.id === id);
@@ -554,7 +554,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.72.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.73.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -778,7 +778,7 @@ async function renderSpec() {
   if (!j.ok) { $('#main').innerHTML = head('SPEC', 'Spec', 'Compliance registry unavailable.'); return; }
   const c = j.coverage;
   const counts = c.counts;
-  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 175 requirements (168 master sections + 7 platform) with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
+  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 176 requirements (168 master sections + 8 platform) with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
   `<div class="stat-grid">
     <div class="stat-card"><p class="stat-label">LIVE</p><p class="stat-value">${counts.LIVE || 0}</p></div>
     <div class="stat-card"><p class="stat-label">PARTIAL</p><p class="stat-value">${counts.PARTIAL || 0}</p></div>
@@ -1257,7 +1257,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.72.0 · 175-REQUIREMENT COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.73.0 · 176-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

@@ -133,7 +133,7 @@ const run = (t, a) => P.runTool(t, a || {}, {});
 
   /* spec coverage + selftest */
   const comp = P.compliance();
-  ok(comp.total === 175, 'spec registry has 175 requirements (168 master + 7 platform)');
+  ok(comp.total === 176, 'spec registry has 176 requirements (168 master + 8 platform)');
   const stt = P.selftestAll();
   /* §126: four truthful states — no FAIL is required; WARNING/NOT_TESTED are
    * honest statements about integrations that genuinely are not connected. */
@@ -376,13 +376,6 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(ab1 && ab1.ok && /blocked/i.test(ab1.reply), 'ask about refuses private addresses via the SSRF guard');
   const ab2 = await P.command('summarize notaurl');
   ok(ab2 && ab2.ok && /fetch/i.test(ab2.reply), 'summarize with a non-URL answers honestly instead of guessing');
-  const expCap = await P.runTool('llm.chat', { prompt: 'ttl check' }, {});
-  ok(expCap.ok === true, 'capability fresh before the expiry test');
-  P.state.permissions['llm.chat'].token.exp = Date.now() - 1000; P.save();
-  const expCap2 = await P.runTool('llm.chat', { prompt: 'ttl check 2' }, {});
-  ok(expCap2.ok === true && P.state.permissions['llm.chat'].state === 'GRANTED' && P.state.permissions['llm.chat'].token.exp > Date.now(), 'an EXPIRED capability on an owner-initiated medium tool is refreshed via the documented EXPIRED→REQUESTED path, not denied');
-  fake.close();
-
   /* ── v1.69: plans 5+3, LD packages, social connectors, self-update ── */
   const servicesMod = require('./platform-services.js');
   ok(servicesMod.PLANS.length === 8 && servicesMod.plansFor('personal').length === 5 && servicesMod.plansFor('business').length === 3, 'plans reshaped to 5 personal + 3 business');
@@ -416,6 +409,33 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   P.decideApproval(ua1.needsApproval, 'approve');
   const ua2 = await P.runTool('update.apply', {}, {});
   ok(ua2.ok === false && (ua2.upToDate === true || !!ua2.error), 'approved self-update refuses to downgrade/replace without a strictly newer remote — nothing was changed');
+
+  /* v1.73: advertising agent — autonomous drafting, walled dispatch */
+  const badAd = await P.command('ad campaign "T" on x, tiktok: hi');
+  ok(badAd && /not postable/.test(badAd.reply) && /verify-only/.test(badAd.reply), 'ad agent refuses non-postable platforms and names the verify-only ones');
+  const ad1 = await P.command('ad campaign "LD Launch" on x, facebook: Introduce WitForge LD to builders');
+  ok(ad1 && ad1.ok && /drafted/.test(ad1.reply) && P.state.adCampaigns.length === 1, 'the agent drafts a campaign (brain or honest fallback)');
+  const adC = P.state.adCampaigns[0];
+  ok(adC.variants.length >= 1 && !!adC.draftedBy, 'the campaign records its drafting source truthfully');
+  const sch = await P.command('ad schedule ' + adC.id);
+  ok(sch && sch.ok && adC.queue.length >= 2 && adC.queue.length <= 12 && adC.status === 'scheduled', 'scheduling expands a rate-capped queue (platform caps, <=12 total)');
+  const adD0 = await P.command('ad dispatch ' + adC.id);
+  ok(adD0 && /not connected\+verified/.test(adD0.reply) && /never any other source/.test(adD0.reply), 'dispatch refuses unverified channels — only the owner\'s own accounts, never any other source');
+  P.setCredential('x', 'sk-adtest-token-123456'); P.setCredential('facebook', 'sk-adtest-token-123456');
+  P.state.social.verified.x = { ts: Date.now(), profile: 'test' }; P.state.social.verified.facebook = { ts: Date.now(), profile: 'test' }; P.save();
+  const adD1 = await P.command('ad dispatch ' + adC.id);
+  ok(adD1 && /approve (ap\w+)/.test(adD1.reply), 'verified channels still require one campaign-level approval');
+  const apAd = adD1.reply.match(/approve (ap\w+)/)[1];
+  P.decideApproval(apAd, 'approve');
+  const adD2 = await P.command('ad dispatch ' + adC.id);
+  ok(adD2 && adD2.ok && adC.results.length >= 1, 'approved dispatch attempts the rate-capped posts and records every real result');
+  ok(adC.results.every(x => x.ok === false) && adD2.reply.includes('reported not faked'), 'junk tokens get real platform refusals — reported honestly, never faked');
+  const expCap = await P.runTool('llm.chat', { prompt: 'ttl check' }, {});
+  ok(expCap.ok === true, 'capability fresh before the expiry test');
+  P.state.permissions['llm.chat'].token.exp = Date.now() - 1000; P.save();
+  const expCap2 = await P.runTool('llm.chat', { prompt: 'ttl check 2' }, {});
+  ok(expCap2.ok === true && P.state.permissions['llm.chat'].state === 'GRANTED' && P.state.permissions['llm.chat'].token.exp > Date.now(), 'an EXPIRED capability on an owner-initiated medium tool is refreshed via the documented EXPIRED→REQUESTED path, not denied');
+  fake.close();
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
