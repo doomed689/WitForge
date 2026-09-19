@@ -1,6 +1,7 @@
 # LIAM Status
 
-- **App:** LIAM Control Centre **v1.73.1** — local-first, truth-stated (hotfix: OpenRouter default model → `openai/gpt-4o`; the `:free` llama slug was retired upstream)
+- **App:** LIAM Control Centre **v1.74.0** — local-first, truth-stated (subscription ladder repriced; includes the v1.73.1 OpenRouter default-model repair)
+- **v1.74 surface:** Plans are pay-only — 5 personal tiers from A$9/mo (plus · pro · elite · ultra · apex A$299) and 2 business tiers from A$30/mo (business · business-plus A$99); free + enterprise tiers retired, legacy plan ids degrade to entry; prices stay reference labels, billing compliance-locked
 - **Local:** `npm run dev` (or `node server.js`) → http://localhost:8787 (`PORT` overrides)
 - **Hosted preview:** https://doomed689.github.io/WitForge/ (static; offline banner when no backend)
 - **AI brain:** six LLM providers — groq · gemini · openrouter · deepseek · mistral (free-tier keys via `connect <id> with token <key>`) and ollama (local, no key); `ask <anything>` answers labelled `provider · model`; `ask all` ensembles every connected provider at once; `ask consensus` synthesizes one balanced verdict; unmatched chat falls back to the brain; missing keys are truth-stated with the free-key path; Ollama is loopback-11434-only; uninstalled local models fall back to an installed one, named

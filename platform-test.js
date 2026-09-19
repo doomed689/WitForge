@@ -378,8 +378,8 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(ab2 && ab2.ok && /fetch/i.test(ab2.reply), 'summarize with a non-URL answers honestly instead of guessing');
   /* ── v1.69: plans 5+3, LD packages, social connectors, self-update ── */
   const servicesMod = require('./platform-services.js');
-  ok(servicesMod.PLANS.length === 8 && servicesMod.plansFor('personal').length === 5 && servicesMod.plansFor('business').length === 3, 'plans reshaped to 5 personal + 3 business');
-  ok(servicesMod.planById('ultra') && servicesMod.planById('ultra').rank === 4 && !servicesMod.planById('enterprise-max'), 'ultra added at rank 4; enterprise-max retired');
+  ok(servicesMod.PLANS.length === 7 && servicesMod.plansFor('personal').length === 5 && servicesMod.plansFor('business').length === 2, 'plans reshaped to 5 personal (from A$9) + 2 business (from A$30)');
+  ok(servicesMod.planById('ultra') && servicesMod.planById('ultra').rank === 4 && servicesMod.planById('apex').rank === 5 && servicesMod.planById('apex').priceAudMonth === 299 && !servicesMod.planById('free') && !servicesMod.planById('enterprise'), 'apex added at rank 5 (A$299); free and enterprise retired');
   const pkg = P.ldPackagesList();
   ok(pkg.packages.length === 5 && pkg.packages.every(k => k.totalLd === k.ld + k.bonus), 'five LD packages with correct totals');
   const sumPre = Object.values(P.state.ledger.accounts).reduce((a, v) => a + v, 0);

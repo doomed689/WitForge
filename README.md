@@ -1,4 +1,11 @@
-# LIAM · v1.73.1 — openrouter default-model repair (hotfix on the v1.73 advertising agent)
+# LIAM · v1.74 — subscription ladder: 5 personal tiers from A$9, 2 business from A$30
+
+**v1.74:** the Plans/Subscription surface is pay-only. Personal — plus A$9 ·
+pro A$29 · elite A$79 · ultra A$149 · apex A$299 per month; business —
+business A$30 · business-plus A$99 per month. The unchargeable free tier and
+the A$499 enterprise tier are retired (legacy stored plan ids degrade to the
+entry tier). Prices remain **reference labels, never charges** — billing stays
+compliance-locked until billing authority exists.
 
 **v1.73.1 hotfix:** OpenRouter retired `meta-llama/llama-3.3-70b-instruct:free`
 (upstream 404 "unavailable for free"), which broke the default brain reply path.
