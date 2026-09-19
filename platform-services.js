@@ -346,10 +346,13 @@ function orgAuthorityNote() { return 'Organisation authority never automatically
  * reference labels only — no charge is created until billing authority exists
  * (see bill()). Entitlements are enforced server-side by requireEntitlement(). */
 const PLANS = [
-  /* v1.74: the ladder is pay-only — five personal tiers from A$9, two
-   * business from A$30. The old $0 'free' tier and A$499 'enterprise' tier
-   * were retired; legacy stored planIds degrade to the entry tier via plan(). */
+  /* v1.74: paid ladder reshaped — five personal tiers from A$9, two business
+   * from A$30; the A$499 'enterprise' tier was retired. v1.74.1: the $0 Free
+   * baseline is restored (owner decision) — it is an entitlement baseline,
+   * never a charge, same as every tier while billing is compliance-locked. */
   /* ── personal ───────────────────────────────────────────────────── */
+  { id: 'free', name: 'Free', family: 'personal', rank: 0, priceAudMonth: 0, blurb: 'The no-charge baseline: everything the platform is, for one person.',
+    entitlements: { 'agents.max': 1, 'storage.mb': 50, 'ai.daily': 25, 'tools.max': 6, 'org.seats': 1, 'marketplace.list': 1, 'api.access': false, 'guardian.level': 'BASIC', 'lotto.ticketsPerDay': 5, 'events.access': 'standard', 'signin.bonusPct': 0, 'support': 'community', 'audit.export': false } },
   { id: 'plus', name: 'Plus', family: 'personal', rank: 1, priceAudMonth: 9, blurb: 'More agents, more storage, the guardian on Standard.',
     entitlements: { 'agents.max': 3, 'storage.mb': 500, 'ai.daily': 200, 'tools.max': 10, 'org.seats': 1, 'marketplace.list': 5, 'api.access': false, 'guardian.level': 'STANDARD', 'lotto.ticketsPerDay': 20, 'events.access': 'standard', 'signin.bonusPct': 5, 'support': 'email', 'audit.export': false } },
   { id: 'pro', name: 'Pro', family: 'personal', rank: 2, priceAudMonth: 29, blurb: 'For one person running real work: hardened guardian, API access, priority events.',
@@ -387,9 +390,9 @@ function comparePlans(a, b) {
 function plan(id) { return PLANS.find(p => p.id === id) || PLANS[0]; }
 function subscribe(state, opts) {
   opts = opts || {};
-  const wanted = String(opts.plan === undefined ? 'plus' : opts.plan).toLowerCase();
+  const wanted = String(opts.plan === undefined ? 'free' : opts.plan).toLowerCase();
   const p = planById(wanted) || PLANS.find(x => x.name.toLowerCase() === wanted);
-  /* An unknown tier is refused. Quietly falling back to Plus would let a
+  /* An unknown tier is refused. Quietly falling back to Free would let a
    * caller believe they bought something that does not exist. */
   if (!p) return { ok: false, error: 'Unknown plan “' + opts.plan + '”. Available: ' + PLANS.map(x => x.id).join(', ') };
   state.subscription = {
@@ -404,9 +407,9 @@ function subscribe(state, opts) {
   return { ok: true, subscription: state.subscription };
 }
 function currentSubscription(state) {
-  const s = state.subscription || (state.subscription = subscribe(state, { plan: 'plus' }).subscription);
+  const s = state.subscription || (state.subscription = subscribe(state, { plan: 'free' }).subscription);
   if (!s.family) {                                   // older local records gain the tier fields
-    const p = planById(s.planId) || plan('plus');
+    const p = planById(s.planId) || plan('free');
     s.family = p.family || 'personal';
     s.rank = p.rank === undefined ? 0 : p.rank;
     s.priceAudMonth = p.priceAudMonth === undefined ? 0 : p.priceAudMonth;
@@ -595,9 +598,9 @@ function otelExport(state) {
   const ns = ms => ms * 1e6;
   return {
     resourceSpans: [{
-      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.74.0' } }] },
+      resource: { attributes: [{ key: 'service.name', value: { stringValue: 'witforge' } }, { key: 'service.version', value: { stringValue: (state.release && state.release.version) || '1.74.1' } }] },
       scopeSpans: [{
-        scope: { name: 'witforge.platform', version: '1.74.0' },
+        scope: { name: 'witforge.platform', version: '1.74.1' },
         spans: (state.spans || []).map(s => ({
           traceId: (s.cid || s.id).padEnd(32, '0').slice(0, 32),
           spanId: s.id.replace(/[^a-f0-9]/gi, '').padEnd(16, '0').slice(0, 16),
@@ -645,7 +648,7 @@ function selftestSummary(checks) {
 function releaseMeta(opts) {
   opts = opts || {};
   return {
-    version: opts.version || '1.74.0',
+    version: opts.version || '1.74.1',
     buildDate: opts.buildDate || now(),
     sourceRevision: opts.sourceRevision || 'unknown (no VCS metadata available)',
     dependencyState: opts.dependencyState || 'zero runtime dependencies; Node built-ins only',

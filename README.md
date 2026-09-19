@@ -1,10 +1,12 @@
-# LIAM · v1.74 — subscription ladder: 5 personal tiers from A$9, 2 business from A$30
+# LIAM · v1.74.1 — subscriptions: free baseline + 5 personal tiers from A$9, 2 business from A$30
 
-**v1.74:** the Plans/Subscription surface is pay-only. Personal — plus A$9 ·
+**v1.74.1:** the Free (A$0) baseline is back by owner decision — it sits under
+the paid ladder as an entitlement baseline, never a charge.
+
+**v1.74:** the Plans/Subscription paid ladder was reshaped. Personal — plus A$9 ·
 pro A$29 · elite A$79 · ultra A$149 · apex A$299 per month; business —
-business A$30 · business-plus A$99 per month. The unchargeable free tier and
-the A$499 enterprise tier are retired (legacy stored plan ids degrade to the
-entry tier). Prices remain **reference labels, never charges** — billing stays
+business A$30 · business-plus A$99 per month; the A$499 enterprise tier was
+retired. Prices remain **reference labels, never charges** — billing stays
 compliance-locked until billing authority exists.
 
 **v1.73.1 hotfix:** OpenRouter retired `meta-llama/llama-3.3-70b-instruct:free`

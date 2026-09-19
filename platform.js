@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.74.0';
+const VERSION = '1.74.1';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -1809,7 +1809,7 @@ async function command(text) {
   }
   if ((m = low.match(/^plan ([a-z][a-z-]*)$/))) {
     const r = subscribeCmd(m[1]);
-    if (!r.ok) return R((r.error || 'Unknown tier') + ' Available: ' + services.PLANS.map(p => p.id).join(', ') + ' (5 personal from A$9, 2 business from A$30).');
+    if (!r.ok) return R((r.error || 'Unknown tier') + ' Available: ' + services.PLANS.map(p => p.id).join(', ') + ' (free baseline + 5 personal from A$9, 2 business from A$30).');
     const e = r.subscription.entitlements;
     return R(`Plan set to ${r.subscription.planName}. Entitlements: ${Object.entries(e).map(([k, v]) => k + '=' + v).join(', ')}. Premium controls are enforced server-side; billing stays locked until billing authority exists.`);
   }
