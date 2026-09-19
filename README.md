@@ -1,4 +1,10 @@
-# LIAM · v1.73 — advertising agent: your channels, your approval, rate-capped
+# LIAM · v1.73.1 — openrouter default-model repair (hotfix on the v1.73 advertising agent)
+
+**v1.73.1 hotfix:** OpenRouter retired `meta-llama/llama-3.3-70b-instruct:free`
+(upstream 404 "unavailable for free"), which broke the default brain reply path.
+Default model is now `openai/gpt-4o` (paid per token); `":free"`-tagged models
+remain zero-cost on request. Verified live against the OpenRouter API on
+2026-09-19. The v1.73 feature set is unchanged, below.
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is

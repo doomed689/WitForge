@@ -35,11 +35,14 @@ const PROVIDERS = [
     connect: 'connect gemini with token <your-free-key>'
   },
   {
-    id: 'openrouter', name: 'OpenRouter (aggregator, :free models)', shape: 'openai', requiresKey: true,
+    id: 'openrouter', name: 'OpenRouter (aggregator, free + paid models)', shape: 'openai', requiresKey: true,
     keyHint: 'openrouter.ai/keys', endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-    defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
-    free: 'free key; models tagged ":free" cost nothing',
-    connect: 'connect openrouter with token <your-free-key>'
+    /* v1.73.1: default repaired — the old meta-llama/llama-3.3-70b-instruct:free
+     * slug was retired upstream (OpenRouter 404 "unavailable for free").
+     * gpt-4o is paid per token; ask for a ":free"-tagged model to spend nothing. */
+    defaultModel: 'openai/gpt-4o',
+    free: 'free key; models tagged ":free" cost nothing, paid models (default gpt-4o) bill per token',
+    connect: 'connect openrouter with token <your-key>'
   },
   {
     id: 'deepseek', name: 'DeepSeek (free credit on signup)', shape: 'openai', requiresKey: true,
