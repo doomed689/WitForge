@@ -272,7 +272,12 @@ function mergePets(avatarId, ids) {
 }
 
 /* ── Battle ───────────────────────────────────────────── */
-function battle(aId, bId, seed) {
+/* §86: wager matches need a determinate, auditable result. Practice brawls
+ * keep the plain 30-round cap with explicit draws; a wager match may opt into
+ * the decision rule, where the higher remaining health fraction wins when no
+ * knockout occurs. Exactly equal health is still a true draw (no settlement). */
+function battle(aId, bId, seed, opts) {
+  opts = opts || {};
   const a = db.avatars.find(x => x.id === aId);
   const b = db.avatars.find(x => x.id === bId);
   if (!a || !b) return { ok: false, error: 'Combatant not found' };
@@ -335,9 +340,18 @@ function battle(aId, bId, seed) {
       entry(rounds, av.name, `${text} — ${crit ? 'CRITICAL! ' : ''}${dmg} damage${resist ? ` (${resist}% resisted)` : ''}. ${ov.name} at ${Math.max(0, osv.hp)}/${odv.maxHP}.`, { dmg, crit, elem });
     }
   }
+  let decision = null;
   if (st.a.hp > 0 && st.b.hp <= 0) winnerId = a.id;
   else if (st.b.hp > 0 && st.a.hp <= 0) winnerId = b.id;
   else if (st.a.hp <= 0 && st.b.hp <= 0) winnerId = null;
+  else if (opts.decisionRule === true) {
+    const fa = st.a.hp / da.maxHP, fb = st.b.hp / dbx.maxHP;
+    if (Math.abs(fa - fb) > 1e-9) {
+      winnerId = fa > fb ? a.id : b.id;
+      decision = 'decision on remaining health';
+      entry(rounds, 'arena', `Round cap reached — ${winnerId === a.id ? a.name : b.name} wins on remaining health (${(Math.max(fa, fb) * 100).toFixed(1)}% vs ${(Math.min(fa, fb) * 100).toFixed(1)}%).`, { decision: true });
+    }
+  }
   else if (rounds >= 30) winnerId = null; // draw: no settlement
 
   // skill growth (Skyrim use-based)
@@ -367,7 +381,7 @@ function battle(aId, bId, seed) {
     }
   } else { a.record.draws++; b.record.draws++; }
 
-  const record = { id: 'bt' + Date.now().toString(36), ts: Date.now(), aId, bId, aName: a.name, bName: b.name, winnerId, draw: !winnerId, rounds, log };
+  const record = { id: 'bt' + Date.now().toString(36), ts: Date.now(), aId, bId, aName: a.name, bName: b.name, winnerId, draw: !winnerId, rounds, decision, log };
   db.battles.unshift(record);
   if (db.battles.length > 60) db.battles.length = 60;
   save();
@@ -406,6 +420,38 @@ function equip(avatarId, itemId) {
   save();
   return { ok: true, avatar: publicAvatar(a) };
 }
+/* §86 Arena security: a wager match requires a verified, complete loadout.
+ * This gate is the one the master spec describes (weapon, head, torso, both
+ * hands, both feet) — practice brawls remain open for naked starts. */
+function loadoutStatus(avatarId) {
+  const a = db.avatars.find(x => x.id === avatarId); if (!a) return { ok: false, error: 'Avatar not found' };
+  const missing = REQUIRED_LOADOUT.filter(slot => !a.equipment[slot]);
+  return { ok: true, avatar: publicAvatar(a), required: REQUIRED_LOADOUT.slice(), missing, complete: missing.length === 0 };
+}
+/* Provision the missing required slots from the engine's own loot table.
+ * Items are real engine items with real fingerprints — nothing is fabricated;
+ * this only fills empty slots so a wager match can satisfy the gate. */
+function equipLoadout(avatarId, opts) {
+  opts = opts || {};
+  const a = db.avatars.find(x => x.id === avatarId); if (!a) return { ok: false, error: 'Avatar not found' };
+  const level = Number(opts.level) || 1;
+  let seed = Number(opts.seed) || ((Date.now() ^ 0x9e37) >>> 0);
+  const rnd = mulberry32(seed);
+  const equipped = [];
+  for (const slot of REQUIRED_LOADOUT) {
+    if (a.equipment[slot]) continue;
+    let item = rollLoot(rnd, level);
+    let guard = 0;
+    while (item.slot !== slot && guard++ < 200) item = rollLoot(rnd, level);
+    if (item.slot !== slot) item = Object.assign({}, item, { slot, kind: SLOT_KIND(slot) });
+    if (opts.maxRLevel) item.rlevel = Math.min(item.rlevel, opts.maxRLevel);
+    a.equipment[slot] = item;
+    equipped.push({ slot, item: item.name, rlevel: item.rlevel, fp: item.fp });
+  }
+  save();
+  return { ok: true, avatar: publicAvatar(a), equipped, status: loadoutStatus(avatarId) };
+}
+
 function unequip(avatarId, slot) {
   const a = db.avatars.find(x => x.id === avatarId); if (!a) return { ok: false, error: 'Avatar not found' };
   const item = a.equipment[slot]; if (!item) return { ok: false, error: 'Slot empty' };
@@ -424,5 +470,6 @@ module.exports = {
   get: id => { const a = db.avatars.find(x => x.id === id); return a ? publicAvatar(a) : null; },
   createAvatar, battle, makeRival, equip, unequip,
   mergePieces, createPet, mergePets,
+  loadoutStatus, equipLoadout,
   history: () => db.battles.slice(0, 30)
 };

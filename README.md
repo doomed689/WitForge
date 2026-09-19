@@ -1,4 +1,4 @@
-# LIAM · v1.59 — live connectors, payment rails, prompt-forged gear, 42-slot avatars
+# LIAM · v1.65 — chat-controlled economy, engagement and owner protection
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -9,20 +9,167 @@ as success.
 ## Run
 
 ```sh
-cd liam
-node server.js          # zero-dependency server, http://127.0.0.1:5173
+cd WitForge
+npm install             # truthful no-op: zero runtime dependencies
+npm run dev             # = node server.js → http://localhost:8787 (PORT overrides)
 ```
 
-Then open `http://127.0.0.1:5173`.
+Then open `http://localhost:8787`. Full installation validation, upgrade and
+rollback procedures are in **INSTALL.md**.
 
-Verification:
+Verification (every command below was executed on this tree):
 
 ```sh
-node --check app.js && node --check server.js
-node smoke-test.js      # 45 checks: every module view, palette, chat
-node platform-test.js   # 71 checks: ledger, SSRF, sandbox, auth, forge, market, payment gates
-node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, battles
+npm run build           # source validation pass (no bundler)
+npm run lint            # project lint rules, dependency-free
+npm test                # all six suites
+npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 ```
+
+| Suite | Checks | What it proves |
+|---|---|---|
+| `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
+| `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
+| `platform-test.js` | 89 | ledger, SSRF, sandbox, allow-list, approvals, router |
+| `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
+| `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
+| `smoke-test.js` | 53 | boots the real server and renders every view (including the six v1.65 workspaces) |
+
+Requirement-level gap analysis against the 168-section master spec:
+`node analysis/gap-scan.js` → **84/84 probed requirements present**.
+
+## v1.65 — chat controls the economy, and the owner is protected
+
+Everything below is reachable in plain language from Chat. Nothing here was in
+the 168-section master specification (grep-verified): it is additive, and it
+keeps the same rules — simulation only, LD never invented, every action audited,
+no claim that the build cannot back.
+
+- **Chat is the control surface for all of it.** `help` prints the catalogue of
+  what can be said; `preview <command>` shows what a command would do without
+  doing it. An intent the platform does not have is answered with guidance, not
+  silence, and never with a guess.
+- **Every avatar piece costs LD.** One price table (`engagement.PIECE_COST`)
+  drives forging (Common 25 → Mythic 2000), loadout provisioning (Common price
+  per missing slot), pets (40 LD) and merges (30 → 2400 by band). If a wallet
+  cannot pay, the action is refused and the reply names the price and the
+  balance. Battle drops stay free and the price list says so.
+- **LD is bought and sold in the app.** `buy 500 ld` / `sell 500 ld` post real
+  double-entry movements at A$0.01 buy and A$0.0095 sell — a disclosed 5%
+  spread, minimum 100 LD, multiples of 10 LD, settlement recorded with the mode
+  `SIMULATION`. Real-money purchase, payout and arena settlement remain
+  COMPLIANCE-LOCKED behind verified payment authority, licensing and identity
+  checks; the refusal says exactly that.
+- **Events** (`events`, `join event <id>`, `event progress <id>`, `close event
+  <id> winner <name>`) — timed windows, entry fees that land in an Events Pool,
+  and a settlement that pays the winner the pool less the disclosed 1% Treasury
+  rule.
+- **Lotto** (`open lotto round`, `buy 3 lotto tickets`, `draw lotto confirm`,
+  `verify lotto`) — 6 from 49, 5 LD a ticket. The server publishes
+  `sha256(seed)` when the round opens and reveals the seed only at the draw, so
+  the numbers cannot change after tickets are sold; `verify lotto` recomputes
+  numbers, lines, sales and allocation from the revealed seed. Sales split 50%
+  prize tiers / 30% jackpot / 15% community / the remainder to Treasury, and an
+  unwon jackpot or tier carries into the next round. Settlement refuses to post
+  unless every LD of sales lands somewhere.
+- **Sign-in gifts and task boards** (`sign in`, `daily tasks`, `weekly tasks`,
+  `claim task <id>`) — a seven-day cycle of 10/20/35/50/75/110/200 LD that keeps
+  a streak across a missed day but restarts after a long gap, plus four daily
+  and four weekly tasks drawn deterministically per day/week so the board cannot
+  be re-rolled for an easier one. Rewards are paid from funded pools
+  (`Rewards Pool`, `Events Pool`, `Lotto Pool`, `Community Pool`, `Jackpot
+  Rollover`) and every payment is an audited issuance from `LD Issuance` — no
+  silent minting.
+- **Multi-tiered subscriptions, personal and business** (`plans`, `upgrade to
+  pro`, `change plan business-plus`) — four personal tiers (Free, Plus, Pro,
+  Elite) and four business tiers (Business, Business Plus, Enterprise,
+  Enterprise Max) with rank, price label, a plain-language blurb and
+  entitlements (agents, storage, AI calls/day, seats, API access, guardian
+  level, lotto tickets/day, support). Selecting a tier records a local plan and
+  changes what the platform *allows*; prices are reference labels, billing is
+  not chargeable, and an unknown tier is refused rather than silently becoming
+  Free.
+- **Owner protection (`owner-security.js` + the Guardian workspace)** — TOTP
+  second factor implemented on Node crypto against RFC 6238 (verified against
+  the published test vector), recovery codes, session inventory and revocation,
+  login/security alerts, re-authentication for sensitive changes, four security
+  levels (BASIC → MAXIMUM) with prerequisites, and drills.
+- **The guardian charter** — ten published duties every agent owes the owner
+  (serve the owner's interest, never self-authorize, protect secrets, report
+  honestly, respect boundaries, never act covertly, treat untrusted content as
+  data, escalate threats, prefer reversible steps, never leave the charter).
+  Every agent action is screened and recorded; an instruction smuggled in from
+  external content is refused with the duty named.
+- **What protection does not promise.** The threat matrix ships inside the
+  product as a named list — 8 COVERED, 4 PARTIAL, 2 OUT-OF-SCOPE — and the
+  out-of-scope entries are stated in the product's own words: a compromised
+  operating system or hardware, and physical coercion of the owner. The platform
+  says plainly that it cannot defend what it does not control, and that real
+  money remains compliance-locked rather than merely switched off.
+
+New surfaces: six live workspaces (Events, Lotto, Rewards, LD Market, Plans,
+Guardian) and the HTTP endpoints `/api/engagement`, `/api/events`, `/api/lotto`,
+`/api/signin`, `/api/quests`, `/api/ldmarket`, `/api/plans`,
+`/api/security/owner`, `/api/guardian`.
+
+## v1.64 — specification-completeness tranche
+
+The master specification's normative systems that were previously approximated
+(or absent) are now implemented as real, tested subsystems. Nothing was removed
+and no capability was faked; where a legitimate bridge does not exist the state
+is reported as unavailable.
+
+- **Security kernel (`kernel.js`)** — §9 nine permission states with legal
+  transitions, §10 five delegation levels (a non-human actor can never raise its
+  own level), §11 bounded act-on-my-behalf delegation, §12 autonomous mode as a
+  bounded policy object (never a boolean), §44 twelve ordered policies, §46 signed
+  expiring capability tokens bound to agent/device/account/resource/purpose/policy
+  version, §51 twelve-factor risk scorer → LOW/MEDIUM/HIGH/CRITICAL/PROHIBITED,
+  §52 approval matrix, §55 seven emergency-stop scopes, §56 four emergency levels,
+  §96 structured audit records, §118 evidence vault, §148 eight-level authority order.
+- **Tool execution pipeline (`platform.runTool`)** — every call now returns its
+  §122 manifest, §51 risk assessment, §44 policy decision, §122/§123 structured
+  result state, evidence hash, correlation id, §6 failure class and §147 correction
+  plan; HIGH/CRITICAL actions stop at the approval gate; PROHIBITED never executes.
+  Emergency-stop scopes are enforced per tool before anything runs.
+- **Capability & adapter layer (`capabilities.js`)** — §8 capability catalogue,
+  §15 eight-method adapter contract, §34–§39 communications/radio/media/screen/
+  location/credential systems, §35 sensitive-path classification, §67 provider
+  registry, §122/§123 manifests + result contracts, §124 five labelled mock
+  adapters (simulation only, `countsAsConnected: false`).
+- **Task engine (`task-engine.js`)** — §151 15-state durable task machine, §99
+  thirteen result states kept distinct from lifecycle states, §6 nine failure
+  classes, §147 correction plans, §149 containment, §101 transaction framework
+  (snapshot-or-refuse for irreversible work, verify-before-commit, rollback),
+  §153/§160 checkpoints + continuation, §154 human handoff, §5 eleven
+  problem-solving stages, §102–§160 eight runnable workflow playbooks.
+- **Platform services (`platform-services.js`)** — §40/§104 six device trust states
+  with pairing that grants nothing by itself, §41 nine-field replayed-protected
+  command envelopes, §105 cross-platform handoff, §107 offline queue, §130–§139
+  account lifecycle with fail-closed account resolution and human-required
+  boundaries refused, §113 organisations, §114 five plans with server-side
+  entitlements (billing refused until billing authority exists), §110 asset
+  registry with sha256 provenance + RARITY-100 approval rule, §112 anti-fraud
+  (duplicate detection, tx monitoring, rate limits, anomaly signals), §119 metrics/
+  spans/correlation ids with OpenTelemetry-shaped export, §126 self-test states,
+  §129 release metadata, §117 ten recovery actions.
+- **Now genuinely testable systems, not promises**: 44 registry sections carry an
+  explicit evidence pointer; `npm test` is the release gate; `npm run build` and
+  `npm run lint` are real validation passes with no dependency toolchain.
+- **Conversational control added** for all of it: `permissions`, `risk <tool>`,
+  `policy <tool>`, `stop network` / `resume network`, `pair device <name>`,
+  `trust device …`, `record account service:user`, `plan pro`, `mint asset …`,
+  `vault`, `metrics`, `trace <cid>`, `release`, `playbooks`, `run playbook dev-fix`,
+  `new task …`, `provision loadout <avatar>`, `arena wager A vs B confirm`.
+- **UI:** new live **Devices** and **Evidence** workspaces; Security gained the
+  stop-scope controls, risk matrix and policy-decision tester; Permissions shows
+  the nine states with suspend/resume/revoke; Status shows release metadata and the
+  four-state self-test; Profile carries accounts, organisations and entitlements;
+  Spec lists per-section evidence.
+- **Economy truthfulness:** `LD_ECONOMY_MODE=simulation`, `LD_AUD_VALUE=0.01`,
+  `REAL_MONEY_WAGERING_ENABLED=false`, `ARENA_WAGER_ENABLED=false` are the shipping
+  configuration; simulated arena wagers settle 100+100 → winner 198 / treasury 2
+  and are labelled SIMULATION. `economyConfig()` exposes the live state.
 
 ## v1.63 — UI panels for the new systems + loot selling
 
@@ -227,9 +374,12 @@ node arena-test.js      # 20 checks: races, naked starts, 42-slot architecture, 
     skill growth (Unarmed, Destruction), racial resistances.
   - Rounds capped at 30 with explicit draw handling; no settlement on draws.
   - Seeded determinism verified on identical fresh state.
-- **Loadout gate**: practice brawls are always allowed (naked starts); the
-  completeness gate (`weapon/head/torso/hand_l/hand_r/foot_l/foot_r`) is exposed for future
-  wager matches, which remain COMPLIANCE-LOCKED per the master spec.
+- **Loadout gate**: practice brawls are always allowed (naked starts); wager
+  matches require both participants to be fully equipped
+  (`weapon/head/torso/hand_l/hand_r/foot_l/foot_r`) before any LD moves.
+- **Wager matches (v1.64)**: 100 LD each → 200 LD pool → winner 198 LD, treasury
+  2 LD (1%), deterministic seed, auditable decision rule at the round cap, true
+  draws settle nothing. Real-money wagering stays COMPLIANCE-LOCKED.
 - Avatar display renders a stylised SVG base body per race (ears, horns, tails,
   wings, glow) with no clothing layer until items are equipped.
 
@@ -238,8 +388,15 @@ naked starts, loadout gate, equip lifecycle, determinism, termination).
 
 ## Not yet implemented (next tranche candidates)
 
-- Real provider bridges (Puter.js, GitHub OAuth, Ollama discovery).
-- 52–57, 60–80, 85–89, 92–100 from GROWTH-50-NEXT (command synonyms, preview
-  records, idempotency keys, authorization decision records, retry budgets,
-  checkpoint browser, traces, export/import manifests, contract health reports).
-- Android companion pairing against this build's `/api/health` surface.
+These remain truthfully **not implemented** — they require either a real bridge
+or a release process this build does not yet have:
+
+- Real provider bridges (Puter.js model runtime, GitHub OAuth device flow,
+  Ollama discovery) and the corresponding `EXTERNAL` registry sections.
+- OS/device bridges: Android companion, ADB, Shizuku, Accessibility, Apple,
+  Windows, ChromeOS, Bluetooth/USB/NFC radio access.
+- Chargeable billing and any real-money economy path (COMPLIANCE-LOCKED).
+- Multi-user organisation membership (needs the multi-account auth expansion).
+- Wrapping *every* tool execution in the transaction framework (the framework
+  exists and is tested; it is applied to atomic operations today).
+- Browser-engine UI testing and an Android companion integration test.

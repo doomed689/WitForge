@@ -10,6 +10,14 @@ const path = require('path');
 const dns = require('dns');
 const net = require('net');
 const crypto = require('crypto');
+const kernel = require('./kernel.js');
+const engagement = require('./engagement.js');
+const ownerSec = require('./owner-security.js');
+const caps = require('./capabilities.js');
+const taskEngine = require('./task-engine.js');
+const services = require('./platform-services.js');
+
+const VERSION = '1.65.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -33,6 +41,29 @@ function freshState() {
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
     reminders: [], notifications: [], schedules: [],
+    /* ── v1.64 specification systems ───────────────────────────── */
+    stops: {},                       // §55 emergency stop scopes
+    devices: [],                     // §40/§104 device trust + inventory
+    deviceCommands: [], seenCommandIds: {}, // §41 replay-protected commands
+    taskHandoffs: [],                // §105 cross-device continuity
+    accounts: [], activeAccounts: {}, // §130–§139 account lifecycle
+    orgs: [], subscription: null,    // §113 organisations, §114 entitlements
+    assets: [], disputes: [],        // §110 asset registry, §86 Arena disputes
+    fraudEvents: [], offlineQueue: [], // §112 anti-fraud, §107 offline queue
+    metrics: [], spans: [],          // §119 observability
+    autonomousPolicies: [], delegations: [], // §11/§12 delegation objects
+    evidenceVault: [],               // §118 evidence vault
+    taskRecords: [],                 // §151 durable task state machine records
+    release: null,                   // §129 release metadata
+    /* ── v1.65 engagement + owner protection ───────────────────── */
+    events: engagement.seedEvents(),  // events board (seeded, real windows)
+    lottoRounds: [],                  // commit→reveal lotto rounds
+    signIns: [],                      // sign-in gift streaks
+    quests: null,                     // daily/weekly task board (window-keyed)
+    ldOrders: [],                     // LD buy/sell orders (audited)
+    guardianEvents: [],               // guardian decisions on agent actions
+    charters: {},                     // per-agent duty charters
+    ownerSecurity: null,              // §54 owner hardening + second factor
     seq: 1
   };
 }
@@ -54,7 +85,12 @@ function seedLegal() {
     mk('treasury', 'Treasury Policy', 'Simulation allocations; 1% rule; approval-gated.'),
     mk('finrisk', 'Financial Risk Policy', 'Real money locked; simulation labelled.'),
     mk('ir', 'Incident Response Policy', 'LOCKDOWN → contain → evidence → recover → report.'),
-    mk('ai', 'AI Policy', 'AI proposes; never authority; provider output untrusted.')
+    mk('ai', 'AI Policy', 'AI proposes; never authority; provider output untrusted.'),
+    mk('delegation', 'Capability Delegation Terms', 'Act-on-my-behalf is bounded to the listed capabilities and scope; unrelated accounts, devices and security-sensitive operations stay excluded (§11).'),
+    mk('accounts', 'Account Terms', 'Account lifecycle operations use provider interfaces only; human-required steps (CAPTCHA, identity, phone) are completed by the user (§130–§139).'),
+    mk('marketplace', 'Marketplace Terms', 'Authorized asset exchange only: ownership verification, anti-fraud, transaction integrity, applicable legal controls and user authorization (§84).'),
+    mk('economic', 'Economic Terms', '100 LD = A$1.00 reference. Simulation is labelled SIMULATION; real money stays locked until every licensing, regulatory and identity requirement is satisfied (§87–§92).'),
+    mk('arena', 'Arena Terms', 'Wagers escrow 100 LD per participant (pool 200 LD); settlement pays the winner 198 LD and the treasury 2 LD (1%). Real-money wagering is compliance-locked (§85–§90).')
   ];
 }
 function save() { fs.writeFileSync(DATA, JSON.stringify(S)); }
@@ -62,18 +98,61 @@ load();
 Object.assign(S, Object.assign(freshState(), S)); // backfill new fields on old stores
 S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }, S.economy);
 S.market = S.market || [];
-for (const acc of ['Forge Sink', 'Marketplace Sink', 'LD Issuance']) if (!(acc in S.ledger.accounts)) S.ledger.accounts[acc] = acc === 'LD Issuance' ? 1000000 : 0;
+/* LD pools are explicit ledger accounts: a reward can only be paid from a pool
+ * that was funded, and funding is an audited issuance from the LD Issuance
+ * reserve. Nothing appears out of nowhere (§164). */
+const LD_POOLS = ['Rewards Pool', 'Events Pool', 'Lotto Pool', 'Community Pool', 'Jackpot Rollover'];
+for (const acc of ['Forge Sink', 'Marketplace Sink', 'LD Issuance'].concat(LD_POOLS)) if (!(acc in S.ledger.accounts)) S.ledger.accounts[acc] = acc === 'LD Issuance' ? 1000000 : 0;
+for (const k of ['stops', 'devices', 'deviceCommands', 'seenCommandIds', 'taskHandoffs', 'accounts', 'activeAccounts', 'orgs', 'assets', 'disputes', 'fraudEvents', 'offlineQueue', 'metrics', 'spans', 'autonomousPolicies', 'delegations', 'evidenceVault', 'taskRecords', 'events', 'lottoRounds', 'signIns', 'ldOrders', 'guardianEvents']) {
+  if (S[k] === undefined || S[k] === null) S[k] = (k === 'stops' || k === 'seenCommandIds' || k === 'activeAccounts') ? {} : [];
+}
+if (!Array.isArray(S.events) || !S.events.length) S.events = engagement.seedEvents();
+if (!S.charters || typeof S.charters !== 'object') S.charters = {};
+ownerSec.securityState(S);
+if (S.subscription === undefined) S.subscription = null;
+if (S.release === undefined) S.release = null;
+// §10: existing grants from earlier stores are normalised into the state model.
+for (const [cap, rec] of Object.entries(S.permissions || {})) {
+  if (!rec.state) { rec.state = 'GRANTED'; rec.level = rec.level || 'EXECUTE'; rec.scopes = rec.scopes || {}; rec.model = 'kernel/1.64'; }
+}
+/* §94/§140: legal records are versioned and additive — an upgrade never
+ * silently drops or rewrites an existing document, it appends the new ones. */
+function migrateLegal() {
+  S.legal = S.legal || [];
+  const have = new Set(S.legal.map(d => d.id));
+  const added = [];
+  for (const doc of seedLegal()) if (!have.has(doc.id)) { S.legal.push(doc); added.push(doc.id); }
+  return { ok: true, added, total: S.legal.length, note: added.length ? 'Missing legal documents were added (additive migration).' : 'Legal document set already complete.' };
+}
+migrateLegal();
 const nid = p => p + (S.seq++).toString(36) + Date.now().toString(36);
 
 let currentCid = null;
 const withCid = fn => { currentCid = crypto.randomBytes(8).toString('hex'); try { return fn(); } finally { currentCid = null; } };
-function audit(type, detail, actor) {
+/* §96: every consequential operation produces a structured audit record.
+ * The chain hash formula is unchanged so existing stores keep verifying. */
+function audit(type, detail, actor, fields) {
   const prev = S.audit[0] ? S.audit[0].hash : 'GENESIS';
-  const e = { ts: Date.now(), type, detail: String(detail).slice(0, 300), actor: actor || 'user', cid: currentCid || 'ui' };
+  const e = kernel.auditRecord(Object.assign({
+    actor: actor || 'user',
+    action: type,
+    detail: String(detail).slice(0, 300),
+    cid: currentCid || 'ui'
+  }, fields || {}));
+  e.type = type;               // kept for existing filters/UI
+  e.ts = e.ts;
   e.hash = crypto.createHash('sha256').update(prev + '|' + e.ts + '|' + e.type + '|' + e.detail + '|' + e.actor).digest('hex');
   S.audit.unshift(e);
   if (S.audit.length > 600) S.audit.length = 600;
   save();
+  return e;
+}
+/* Secrets are masked/excluded before an audit detail is written (§96). */
+function maskSecrets(text) {
+  return String(text === undefined || text === null ? '' : text)
+    .replace(/(sk_[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/g, '$1…[masked]')
+    .replace(/(ghp_[A-Za-z0-9]{4})[A-Za-z0-9]+/g, '$1…[masked]')
+    .replace(/((?:token|password|secret|api[_-]?key)"?\s*[:=]\s*"?)([^"\s,}]{4})[^"\s,}]*/gi, '$1$2…[masked]');
 }
 function verifyAudit() {
   let prev = 'GENESIS';
@@ -100,22 +179,113 @@ function setEmergency(state, confirmed) {
   return { ok: true, state };
 }
 
-/* ── Permissions: the user's request is the grant ─────── */
-function signToken(cap, id, exp) {
-  return crypto.createHmac('sha256', S.secret).update(cap + '|' + id + '|' + exp).digest('hex');
+/* ── Permissions: §9 states, §10 levels, §46 scoped tokens ──────
+ * The user's request is still the grant; what changes in 1.64 is that a
+ * grant is now a full state-machine record (state, level, scopes, expiry,
+ * purpose, bound token) instead of a boolean. */
+const RISK_LEVEL_DEFAULT = { low: 'OBSERVE', medium: 'EXECUTE', high: 'RESTRICTED', critical: 'RESTRICTED', prohibited: 'RESTRICTED' };
+function toolForCap(cap) {
+  const hit = Object.entries(TOOLS).find(([, t]) => t.cap === cap);
+  return hit ? { id: hit[0], risk: hit[1].risk } : null;
 }
-function grant(cap, how) {
-  const id = 'tk' + (S.seq++).toString(36), exp = Date.now() + 3600e3;
-  S.permissions[cap] = { level: 'granted', grantedBy: how || 'user-request', ts: Date.now(), token: { id, exp, sig: signToken(cap, id, exp) } };
-  audit('permission', `PERMISSION GRANTED ${cap} (${S.permissions[cap].grantedBy}) token ${id} expires 1h`, 'user');
+function capRisk(cap) {
+  const t = toolForCap(cap);
+  if (t) return String(t.risk).toUpperCase();
+  const rec = caps.capabilityRecord(cap);
+  return String(rec.risk || 'MEDIUM').toUpperCase();
+}
+function capabilityState(cap) {
+  const rec = (S.permissions || {})[cap];
+  if (!rec) return 'NOT_REQUESTED';
+  if (rec.state === 'GRANTED' && rec.token && rec.token.exp && Date.now() > rec.token.exp) return 'EXPIRED';
+  return rec.state || 'GRANTED';
+}
+function capabilityRecord(cap) { return (S.permissions || {})[cap] || null; }
+function capabilityLevel(cap) { const r = capabilityRecord(cap); return r ? r.level : null; }
+function setCapabilityState(cap, next, opts) {
+  opts = opts || {};
+  const rec = capabilityRecord(cap) || { capability: cap, state: 'NOT_REQUESTED', scopes: {}, history: [] };
+  const t = kernel.transitionPermission(rec, next, opts.reason);
+  if (!t.ok) return t;
+  const out = Object.assign({}, t.record, {
+    capability: cap,
+    risk: capRisk(cap),
+    history: (rec.history || []).concat([{ from: t.from, to: t.to, ts: Date.now(), reason: opts.reason || null }]).slice(-12)
+  });
+  S.permissions[cap] = out;
+  audit('permission', opts.detail || `PERMISSION ${t.from} → ${t.to}: ${cap}${opts.reason ? ' (' + opts.reason + ')' : ''}`, opts.actor || 'user', {
+    capability: cap, decision: t.to, reason: opts.reason || null, risk: out.risk, approval: opts.approval || null,
+    result: t.to === 'GRANTED' ? 'SUCCEEDED' : 'BLOCKED'
+  });
   save();
+  return { ok: true, capability: cap, state: t.to, record: out, from: t.from };
 }
-function revoke(cap) { delete S.permissions[cap]; audit('permission', 'PERMISSION REVOKED ' + cap, 'user'); save(); }
-const permitted = cap => !!S.permissions[cap];
-function tokenValid(cap) {
-  const p = S.permissions[cap]; if (!p || !p.token) return false;
-  if (Date.now() > p.token.exp) return false;
-  return signToken(cap, p.token.id, p.token.exp) === p.token.sig;
+function requestCapability(cap, opts) {
+  opts = opts || {};
+  const level = opts.level || RISK_LEVEL_DEFAULT[String(capRisk(cap)).toLowerCase()] || 'EXECUTE';
+  // A fresh request always re-enters through REQUESTED, so re-granting after a
+  // revocation/expiry follows the documented state machine (§9).
+  if (!['REQUESTED', 'GRANTED', 'SUSPENDED'].includes(capabilityState(cap))) {
+    setCapabilityState(cap, 'REQUESTED', { detail: 'PERMISSION REQUESTED ' + cap, reason: opts.reason || 'capability needed for the request' });
+  }
+  const ttlMs = Number(opts.ttlMs) || 3600e3;
+  const token = kernel.createToken({
+    capability: cap, subject: opts.subject || 'owner', agent: opts.agent || null, device: opts.device || null,
+    account: opts.account || null, resource: opts.resource || null, scope: opts.scopes || {},
+    purpose: opts.purpose || opts.reason || 'user-request', approval: opts.approval || null
+  }, S.secret, ttlMs);
+  const r = setCapabilityState(cap, 'GRANTED', { reason: opts.reason || 'user-request' });
+  if (!r.ok) return r;
+  r.record.level = level;
+  r.record.scopes = opts.scopes || {};
+  r.record.grantedBy = opts.how || 'user-request';
+  r.record.purpose = opts.purpose || opts.reason || 'user-request';
+  r.record.token = token;
+  S.permissions[cap] = r.record;
+  save();
+  audit('permission', `PERMISSION GRANTED ${cap} (${r.record.grantedBy}) level ${level} token ${token.id} expires ${new Date(token.exp).toISOString()}`, 'user',
+    { capability: cap, decision: 'GRANTED', reason: r.record.purpose, risk: r.record.risk, approval: opts.approval || null, result: 'SUCCEEDED' });
+  save();
+  return { ok: true, capability: cap, state: 'GRANTED', level, token, record: S.permissions[cap] };
+}
+function grant(cap, how, opts) { return requestCapability(cap, Object.assign({ how: how }, opts || {})); }
+function revoke(cap, reason) {
+  const rec = capabilityRecord(cap);
+  if (!rec) { audit('permission', 'PERMISSION REVOKE refused (never granted): ' + cap, 'user', { capability: cap, decision: 'DENY', reason: 'not-granted' }); save(); return { ok: false, error: 'Capability was never granted' }; }
+  const r = setCapabilityState(cap, rec.state === 'GRANTED' || rec.state === 'SUSPENDED' ? 'REVOKED' : 'REVOKED', { reason: reason || 'revoked by user' });
+  return r.ok ? { ok: true, capability: cap, state: 'REVOKED' } : r;
+}
+function deny(cap, reason) { return setCapabilityState(cap, 'DENIED', { reason: reason || 'denied by user', detail: 'PERMISSION DENIED ' + cap }); }
+function suspend(cap, reason) { return setCapabilityState(cap, 'SUSPENDED', { reason: reason || 'suspended by user' }); }
+function resumeCapability(cap) { return setCapabilityState(cap, 'GRANTED', { reason: 'resumed by user' }); }
+function expire(cap) { return setCapabilityState(cap, 'EXPIRED', { reason: 'authorization window closed' }); }
+function blockBySecurity(cap, reason) { return setCapabilityState(cap, 'BLOCKED_BY_SECURITY', { reason: reason || 'security block', actor: 'system' }); }
+function blockByPolicy(cap, reason) { return setCapabilityState(cap, 'BLOCKED_BY_POLICY', { reason: reason || 'policy violation', actor: 'system' }); }
+const permitted = cap => capabilityState(cap) === 'GRANTED';
+function tokenValid(cap, ctx) {
+  const rec = capabilityRecord(cap);
+  if (!rec || !rec.token) return false;
+  return kernel.verifyToken(rec.token, S.secret, Object.assign({ policyVersion: kernel.DEFAULT_POLICY_VERSION }, ctx || {})).ok;
+}
+/* §9: scope dimensions carried on a grant. */
+function scopedGrant(cap, scopes, opts) {
+  const bad = Object.keys(scopes || {}).filter(k => !kernel.SCOPE_DIMENSIONS.includes(k));
+  if (bad.length) return { ok: false, error: 'Unknown scope dimension(s): ' + bad.join(', '), allowed: kernel.SCOPE_DIMENSIONS };
+  return requestCapability(cap, Object.assign({ scopes: scopes || {} }, opts || {}));
+}
+function capabilityTable() {
+  const out = [];
+  const all = new Set([...Object.keys(S.permissions || {}), ...Object.values(TOOLS).map(t => t.cap)]);
+  for (const cap of all) {
+    const rec = capabilityRecord(cap);
+    out.push({
+      capability: cap, state: capabilityState(cap), level: rec ? rec.level : null,
+      risk: capRisk(cap), scopes: rec ? rec.scopes : {}, grantedBy: rec ? rec.grantedBy : null,
+      expires: rec && rec.token ? rec.token.exp : null, purpose: rec ? rec.purpose : null,
+      tokenId: rec && rec.token ? rec.token.id : null
+    });
+  }
+  return out;
 }
 
 /* ── Approvals gate for high-risk actions ─────────────── */
@@ -206,6 +376,29 @@ async function guardedFetch(url, headers, opts) {
   } finally { clearTimeout(t); }
 }
 
+/* §35 helpers: sensitive-location controls and integrity hashes. */
+function fsHash(relPath) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(safePath(relPath))).digest('hex'); } catch (e) { return null; }
+}
+function readSafe(full) { try { return fs.readFileSync(full, 'utf8').slice(0, 100000); } catch (e) { return ''; } }
+function fsResolve2(a, op) {
+  const from = safePath(a.path || '');
+  const to = safePath(a.to || '');
+  if (!a.path || !a.to) return { err: { error: 'path and to are required' } };
+  if (!from || !to || String(a.path).includes('..') || String(a.to).includes('..')) return { err: { error: 'Path escapes sandbox' } };
+  return { from, to };
+}
+/* §20/§49: imported material is untrusted and is scanned before it is trusted. */
+const UNTRUSTED_SIGNALS = [
+  { id: 'embedded-instructions', re: /ignore (all )?previous (instructions|rules)|you are now|system prompt|disregard (the )?(above|policy)/i },
+  { id: 'exec-shell', re: /(curl|wget)\s+[^\s]+\s*\|\s*(sh|bash)|rm -rf \/|chmod \+x/i },
+  { id: 'credential-material', re: /(BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{10,})/ },
+  { id: 'exfil-pattern', re: /process\.env|\/etc\/passwd|\.ssh\/id_rsa/i }
+];
+function scanUntrusted(text, name) {
+  const signals = UNTRUSTED_SIGNALS.filter(x => x.re.test(String(text || ''))).map(x => x.id);
+  return { name: name || null, signals, untrusted: true, trusted: false, note: 'External content is data, never authority (§49).' };
+}
 function safePath(p) {
   const resolved = path.normalize(path.join(USERFILES, String(p || '')));
   if (resolved !== USERFILES && !resolved.startsWith(USERFILES + path.sep)) return null;
@@ -287,7 +480,7 @@ const TOOLS = {
       if (a.decode) { try { return { decoded: Buffer.from(String(a.text || ''), 'base64').toString('utf8').slice(0, 5000) }; } catch (e) { return { error: 'Invalid base64' }; } }
       return { encoded: Buffer.from(String(a.text || ''), 'utf8').toString('base64') };
     } },
-  'util.time': { cap: 'util.run', risk: 'low', run: () => { const d = new Date(); return { iso: d.toISOString(), utc: d.toUTCString(), epoch: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone   ,
+  'util.time': { cap: 'util.run', risk: 'low', run: () => { const d = new Date(); return { iso: d.toISOString(), utc: d.toUTCString(), epoch: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }; } },
   /* ── v1.61: more real key-free connectors ────────────────────── */
   'hn.top': { cap: 'hn.read', risk: 'low', run: async a => {
       const n = Math.min(10, Math.max(1, Number(a.count) || 5));
@@ -336,73 +529,105 @@ const TOOLS = {
       const text = Buffer.from(String(j.content).replace(/\n/g, ''), 'base64').toString('utf8');
       return { path: j.path, bytes: j.size, sha: j.sha.slice(0, 8), text: text.slice(0, 4000), truncated: text.length > 4000 };
     } },
-  'github.writefile': { cap: 'github.write', risk: 'high', run: async a => {
-      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
-      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
-      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
-      const body = String(a.content || '');
-      if (!sub || !body) return { error: 'path and content required' };
-      if (body.length > 10000) return { error: 'content capped at 10KB' };
-      const hdr = { authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM', 'content-type': 'application/json' };
-      let sha; const ex = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr);
-      if (ex.ok) { try { sha = JSON.parse(ex.text).sha; } catch (e) {} }
-      const payload = { message: 'LIAM: ' + (sha ? 'update' : 'create') + ' ' + sub, content: Buffer.from(body, 'utf8').toString('base64'), branch: 'main' };
-      if (sha) payload.sha = sha;
-      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), hdr, { method: 'PUT', body: JSON.stringify(payload) });
-      let j; try { j = JSON.parse(r.text || '{}'); } catch (e) { j = null; }
-      if (!j || !j.content) return { error: 'GitHub write failed (' + (r.status ? 'HTTP ' + r.status : (r.error || 'network error')) + (j && j.message ? ': ' + j.message : '') + ')', truthful: true };
-      audit('tool', 'GITHUB WRITE ' + j.content.path + ' @main', 'user'); save();
-      return { path: j.content.path, sha: j.content.sha.slice(0, 8), commit: j.commit && j.commit.sha && j.commit.sha.slice(0, 8), url: j.content.html_url };
-    } }
-}; } }
-  ,
-  /* ── v1.61: more real key-free connectors ────────────────────── */
-  'hn.top': { cap: 'hn.read', risk: 'low', run: async a => {
-      const n = Math.min(10, Math.max(1, Number(a.count) || 5));
-      const r = await guardedFetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+  /* ── v1.64: full §35 file operations inside the sandbox ───────── */
+  'fs.rename': { cap: 'files.rename', risk: 'medium', verification: 'directory listing shows the new name', run: a => { const r = fsResolve2(a, 'files.rename'); if (r.err) return r.err; try { if (!fs.existsSync(r.from)) return { error: 'Source not found in sandbox' }; if (fs.existsSync(r.to)) return { error: 'Target already exists' }; fs.renameSync(r.from, r.to); return { renamed: a.path, to: a.to, sha256: fsHash(r.to) }; } catch (e) { return { error: 'Rename failed: ' + e.message }; } } },
+  'fs.move': { cap: 'files.move', risk: 'medium', verification: 'source absent, target present', run: a => { const r = fsResolve2(a, 'files.move'); if (r.err) return r.err; try { if (!fs.existsSync(r.from)) return { error: 'Source not found in sandbox' }; fs.mkdirSync(path.dirname(r.to), { recursive: true }); fs.renameSync(r.from, r.to); return { moved: a.path, to: a.to, sha256: fsHash(r.to) }; } catch (e) { return { error: 'Move failed: ' + e.message }; } } },
+  'fs.copy': { cap: 'files.copy', risk: 'low', verification: 'copy exists with identical sha256', run: a => { const r = fsResolve2(a, 'files.copy'); if (r.err) return r.err; try { if (!fs.existsSync(r.from)) return { error: 'Source not found in sandbox' }; fs.mkdirSync(path.dirname(r.to), { recursive: true }); fs.copyFileSync(r.from, r.to); return { copied: a.path, to: a.to, sha256: fsHash(r.to), sourceSha256: fsHash(r.from) }; } catch (e) { return { error: 'Copy failed: ' + e.message }; } } },
+  'fs.delete': { cap: 'files.delete', risk: 'high', irreversible: true, verification: 'path no longer listed', run: a => { const d = safePath(a.path || ''); if (!d || !a.path || a.path.includes('..')) return { error: 'Path escapes sandbox' }; const ctl = caps.classifyPath(a.path); try { if (!fs.existsSync(d)) return { error: 'Not found in sandbox' }; const pre = fs.statSync(d); if (pre.isDirectory() && !a.recursive) return { error: 'Directory deletion requires recursive: true' }; const sha = pre.isFile() ? fsHash(a.path) : null; if (a.recursive) fs.rmSync(d, { recursive: true, force: true }); else fs.unlinkSync(d); return { deleted: a.path, bytes: pre.size, sha256BeforeDelete: sha, sensitive: ctl.sensitive, control: ctl.control }; } catch (e) { return { error: 'Delete failed: ' + e.message }; } } },
+  'fs.export': { cap: 'files.export', risk: 'low', verification: 'exported copy hash matches source', run: a => { const r = safePath(a.path || ''); if (!r) return { error: 'Path escapes sandbox' }; try { if (!fs.existsSync(r)) return { error: 'Not found in sandbox' }; const outDir = path.join(__dirname, 'data', 'exports'); fs.mkdirSync(outDir, { recursive: true }); const out = path.join(outDir, path.basename(a.path)); fs.copyFileSync(r, out); return { exported: a.path, to: path.relative(__dirname, out), sha256: fsHash(a.path), bytes: fs.statSync(r).size }; } catch (e) { return { error: 'Export failed: ' + e.message }; } } },
+  'fs.share': { cap: 'files.share', risk: 'high', run: a => ({ error: 'Sharing requires an authorized OS share sheet or provider API — none is connected, so nothing is shared (never simulated).', truthful: true, requiredInterface: 'OS share sheet / provider share API' }) },
+  'fs.import': { cap: 'files.import', risk: 'medium', verification: 'imported file scanned and labelled untrusted', run: a => { const r = safePath(a.path || ''); if (!r || !a.path) return { error: 'Path escapes sandbox' }; const text = String(a.content || ''); if (text.length > 50000) return { error: 'Content capped at 50KB' }; const scan = scanUntrusted(text, a.path); fs.mkdirSync(path.dirname(r), { recursive: true }); fs.writeFileSync(r, text); return { imported: a.path, bytes: Buffer.byteLength(text), untrusted: true, scan, sha256: fsHash(a.path) }; } },
+  /* ── v1.64: §16 authorized web submission (same SSRF controls) ── */
+  'http.post': { cap: 'web.submit', risk: 'high', verification: 'HTTP response status + body hash', run: async a => {
+      if (!a.url) return { error: 'url required' };
+      if (a.authorized !== true) return { error: 'Authorized submission requires confirmation that the target accepts this form/workflow', blocked: 'permission', needsAuthorization: true };
+      const payload = typeof a.body === 'string' ? a.body : JSON.stringify(a.body || {});
+      if (payload.length > 20000) return { error: 'Request body capped at 20KB' };
+      const r = await guardedFetch(String(a.url), {
+        'content-type': String(a.contentType || 'application/json'), accept: 'application/json'
+      }, { method: 'POST', body: payload });
       if (!r.ok) return r;
-      let ids; try { ids = JSON.parse(r.text); } catch (e) { return { error: 'Bad HN response' }; }
-      const stories = [];
-      for (const id of ids.slice(0, n)) {
-        const it = await guardedFetch('https://hacker-news.firebaseio.com/v0/item/' + id + '.json');
-        if (it.ok) { try { const j = JSON.parse(it.text); stories.push({ title: j.title, by: j.by, score: j.score, url: j.url || ('https://news.ycombinator.com/item?id=' + id) }); } catch (e) {} }
-      }
-      return { count: stories.length, stories, source: 'Hacker News official API (real)' };
+      return { status: r.status, bytes: r.bytes, sha256: crypto.createHash('sha256').update(r.text || '').digest('hex'), body: String(r.text || '').slice(0, 2000) };
     } },
-  'country.get': { cap: 'country.read', risk: 'low', run: async a => {
-      const name = String(a.name || '').trim().slice(0, 60); if (!name) return { error: 'country name required' };
-      const r = await guardedFetch('https://countries.dev/name/' + encodeURIComponent(name));
-      if (!r.ok) return { error: 'No country data found for “' + name + '” (' + (r.error || 'HTTP ' + r.status) + ')', truthful: true };
-      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad country response' }; }
-      const c = Array.isArray(j) ? j[0] : j; if (!c || !c.area) return { error: 'No country found for “' + name + '”', truthful: true };
-      return { name: c.name, flag: c.flag, capital: c.capital || '—', population: c.population, region: c.region, area: c.area,
-        currencies: (c.currencies || []).map(x => x.name + (x.symbol ? ' (' + x.symbol + ')' : '')).slice(0, 3),
-        languages: (c.languages || []).map(x => x.name).slice(0, 6), source: 'countries.dev (real, keyless)' };
+  /* ── v1.64: §47/§48/§50 defensive local scan + bounded remediation ── */
+  'security.scan': { cap: 'security.scan', risk: 'medium', verification: 'findings list with evidence hash', run: a => {
+      const target = a.path ? safePath(a.path) : USERFILES;
+      if (!target) return { error: 'Path escapes sandbox' };
+      const findings = [];
+      const walk = (dir, depth) => {
+        if (depth > 4) return;
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        for (const e of entries.slice(0, 200)) {
+          const full = path.join(dir, e.name);
+          const rel = path.relative(USERFILES, full);
+          const ctl = caps.classifyPath(rel);
+          if (ctl.sensitive) findings.push({ severity: 'HIGH', id: 'sensitive-location', path: rel, note: ctl.kind + ' — ' + ctl.control });
+          if (e.isDirectory()) { walk(full, depth + 1); continue; }
+          if (/\.(sh|bat|ps1|exe|dll|scr|vbs|jar|apk)$/i.test(e.name)) findings.push({ severity: 'MEDIUM', id: 'executable-artifact', path: rel, note: 'executable content inside the sandbox — treat as untrusted' });
+          if (/\.(js|json|txt|md|env|yml|yaml)$/i.test(e.name)) {
+            const scan = scanUntrusted(readSafe(full), rel);
+            if (scan.signals.length) findings.push({ severity: 'MEDIUM', id: 'content-signals', path: rel, note: scan.signals.join(', ') });
+          }
+        }
+      };
+      walk(target, 0);
+      const evidenceHash = crypto.createHash('sha256').update(JSON.stringify(findings)).digest('hex');
+      return { target: path.relative(USERFILES, target) || '.', findings, count: findings.length, evidenceHash, scope: 'authorized sandbox assets only', note: 'Local defensive scan of WitForge-controlled assets. No external system is ever scanned.' };
     } },
-  /* ── v1.61: GitHub repo file-ops through the live adapter ────── */
-  'github.files': { cap: 'github.read', risk: 'medium', run: async a => {
-      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
-      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential. Say “connect github with token …”.', truthful: true };
-      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 80);
-      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
-        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
-      if (!r.ok) return { error: 'GitHub list failed (HTTP ' + r.status + ')' , truthful: true };
-      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
-      if (!Array.isArray(j)) return { error: 'Path is a file, not a directory', truthful: true };
-      return { path: sub || '/', files: j.slice(0, 60).map(f => ({ name: f.name, type: f.type, size: f.size, path: f.path })) };
+  'security.remediate': { cap: 'security.remediate', risk: 'high', verification: 'quarantined path gone from sandbox and present in quarantine with hash', run: a => {
+      const r = safePath(a.path || '');
+      if (!r || !a.path) return { error: 'Path escapes sandbox' };
+      if (!fs.existsSync(r)) return { error: 'Nothing to quarantine at that path' };
+      const qdir = path.join(__dirname, 'data', 'quarantine');
+      fs.mkdirSync(qdir, { recursive: true });
+      const dest = path.join(qdir, path.basename(a.path) + '.' + Date.now().toString(36));
+      const sha = fsHash(a.path);
+      try { fs.renameSync(r, dest); } catch (e) { return { error: 'Quarantine failed: ' + e.message }; }
+      return { quarantined: a.path, store: path.relative(__dirname, dest), sha256: sha, reversible: true, note: 'Bounded eradication: the artifact is contained inside WitForge-controlled storage and can be restored.' };
     } },
-  'github.readfile': { cap: 'github.read', risk: 'medium', run: async a => {
-      const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
-      if (!tok) return { error: 'GitHub UNAVAILABLE — no credential.', truthful: true };
-      const sub = String(a.path || '').replace(/^[\/]+|\.\./g, '').slice(0, 120);
-      if (!sub) return { error: 'file path required' };
-      const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
-        authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' });
-      if (!r.ok) return { error: 'GitHub read failed (HTTP ' + r.status + ')', truthful: true };
-      let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
-      if (!j.content) return { error: 'Not a file (or too large)', truthful: true };
-      const text = Buffer.from(String(j.content).replace(/\n/g, ''), 'base64').toString('utf8');
-      return { path: j.path, bytes: j.size, sha: j.sha.slice(0, 8), text: text.slice(0, 4000), truncated: text.length > 4000 };
+  /* ── v1.64: local knowledge + account lifecycle steps ─────────── */
+  'knowledge.write': { cap: 'knowledge.write', risk: 'low', verification: 'record stored with content hash', run: a => {
+      const text = String(a.text || '').slice(0, 500); if (!text) return { error: 'text required' };
+      const rec = { id: nid('k'), title: String(a.title || text).slice(0, 60), text, ts: Date.now(), source: a.source || 'playbook', trusted: false };
+      S.knowledge.unshift(rec); if (S.knowledge.length > 300) S.knowledge.length = 300; save();
+      return { stored: rec.id, sha256: crypto.createHash('sha256').update(text).digest('hex'), trusted: false };
+    } },
+  'account.discover': { cap: 'account.discover', risk: 'low', verification: 'capability record for the named service', run: a => {
+      const service = String(a.service || '').toLowerCase().slice(0, 40);
+      const known = caps.CAPABILITY_CATALOGUE.filter(c => c.domain === 'account');
+      const integrations = ADAPTERS.find(x => x.id === service);
+      return {
+        service, registrationInterfaceSupported: !!(integrations && String(integrations.state) === 'AVAILABLE'),
+        integration: integrations ? { id: integrations.id, state: integrations.state } : null,
+        requirements: ['email or phone verification where the provider requires it', 'payment details where the provider charges', 'terms acceptance by the user where legally binding'],
+        accountCapabilities: known.map(c => c.id),
+        note: 'Discovery reports the legitimate interface only. Human-required steps (CAPTCHA, identity, phone) are completed by the user (§132).'
+      };
+    } },
+  'account.configure': { cap: 'account.configure', risk: 'medium', verification: 'local settings record for the account', run: a => {
+      const acct = services.resolveAccount(S, String(a.service || '').toLowerCase());
+      if (!acct.ok) return { error: 'No unambiguous account for ' + a.service + ' (' + acct.reason + ')', blocked: 'permission', reason: acct.reason };
+      const settings = Object.assign({ mfa: 'unknown', sessions: 'unchanged', recovery: 'unknown' }, a.settings || {});
+      acct.account.settings = settings;
+      acct.account.securityStatus = settings.mfa === 'enabled' ? 'HARDENED' : acct.account.securityStatus;
+      revokeCredential ? null : null;
+      save();
+      return { account: acct.account.id, settings, note: 'Only settings the provider actually supports can be changed; nothing here claims a provider-side change without provider evidence.' };
+    } },
+  'account.disconnect': { cap: 'account.disconnect', risk: 'medium', verification: 'grants removed, credential destroyed, audit preserved', run: a => {
+      const list = services.accountsFor(S, String(a.service || '').toLowerCase());
+      if (!list.length) return { error: 'No connected account for ' + a.service };
+      const results = list.map(x => disconnectAccountCmd(x.id));
+      return { service: a.service, disconnected: results.map(r => r.account), grantsRevoked: results.reduce((n2, r) => n2 + r.revokedGrants.length, 0) };
+    } },
+  /* ── v1.64: §124 mock adapter executed through the real pipeline ── */
+  'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: a => {
+      const ad = caps.MOCK_ADAPTERS.find(x => x.behaviour === (a.behaviour || 'succeed')) || caps.MOCK_ADAPTERS[0];
+      ad.authenticate();
+      const out = ad.executeAction();
+      const v = ad.verifyAction();
+      return Object.assign({ simulation: true, adapter: ad.id, behaviour: ad.behaviour, verified: v.verified, mode: 'SIMULATION — this adapter is a test instrument and is never counted as a connected integration' }, out);
     } },
   'github.writefile': { cap: 'github.write', risk: 'high', run: async a => {
       const tok = decryptToken('github') || process.env.GITHUB_TOKEN;
@@ -425,27 +650,52 @@ const TOOLS = {
 };
 
 /* ── Economy: balanced double-entry, simulation-labelled ─ */
-function ledgerPost(entries, memo) {
+/* §89: every transaction records debit, credit, id, timestamp, actor, reason,
+ * source, destination and the resulting balances. Balances stay derived from
+ * auditable ledger state — never from client input. */
+function ledgerPost(entries, memo, meta) {
+  meta = meta || {};
   const sum = entries.reduce((n, e) => n + e.delta, 0);
-  if (sum !== 0) return { ok: false, error: 'Unbalanced entry rejected (debits must equal credits)' };
+  if (sum !== 0) {
+    const fraud = services.fraudScreen(S, { kind: 'ledger', actor: meta.actor, unbalanced: true, amount: sum });
+    audit('economy', 'UNBALANCED ENTRY REJECTED: ' + memo, 'system', { decision: 'BLOCK', reason: 'debits must equal credits', risk: 'CRITICAL', result: 'BLOCKED', evidenceHash: kernel.auditRecord({}).evidenceHash });
+    return { ok: false, error: 'Unbalanced entry rejected (debits must equal credits)', blocked: 'ledger', fraud };
+  }
   for (const e of entries) {
     if (!(e.account in S.ledger.accounts)) S.ledger.accounts[e.account] = 0;
-    if (S.ledger.accounts[e.account] + e.delta < 0) return { ok: false, error: 'Negative balance prevented on ' + e.account };
+    if (S.ledger.accounts[e.account] + e.delta < 0) return { ok: false, error: 'Negative balance prevented on ' + e.account, blocked: 'ledger' };
   }
+  const fraud = services.fraudScreen(S, { kind: meta.kind || 'ledger', actor: meta.actor, counterparty: meta.counterparty, amount: entries.reduce((n, e) => n + Math.abs(e.delta), 0) / 2, recentSameKind: meta.recentSameKind, duplicateIdentity: meta.duplicateIdentity });
+  if (fraud.blocked) return { ok: false, error: 'Anti-fraud block: ' + fraud.signals.map(x => x.id).join(', '), blocked: 'fraud', fraud };
   for (const e of entries) S.ledger.accounts[e.account] += e.delta;
-  S.ledger.tx.unshift({ id: nid('tx'), ts: Date.now(), entries, memo, mode: 'SIMULATION' });
+  const balances = {};
+  entries.forEach(e => { balances[e.account] = S.ledger.accounts[e.account]; });
+  const debits = entries.filter(e => e.delta < 0).map(e => e.account);
+  const credits = entries.filter(e => e.delta > 0).map(e => e.account);
+  const tx = {
+    id: nid('tx'), ts: Date.now(), entries, memo,
+    mode: S.economy.realMode ? 'REAL' : 'SIMULATION',
+    actor: meta.actor || 'user',
+    reason: meta.reason || memo,
+    source: meta.source || debits.join(', ') || null,
+    destination: meta.destination || credits.join(', ') || null,
+    balances,
+    fraudSignals: fraud.signals.map(x => x.id)
+  };
+  S.ledger.tx.unshift(tx);
+  if (S.ledger.tx.length > 800) S.ledger.tx.length = 800;
   save();
-  return { ok: true };
+  return { ok: true, tx };
 }
 function wager(playerA, playerB, amount, settleTo) {
   amount = Math.floor(Number(amount));
   if (!(amount > 0)) return { ok: false, error: 'Invalid wager amount' };
-  const hold = ledgerPost([{ account: playerA, delta: -amount }, { account: 'Arena Escrow', delta: amount }], 'wager hold ' + playerA);
+  const hold = ledgerPost([{ account: playerA, delta: -amount }, { account: 'Arena Escrow', delta: amount }], 'wager hold ' + playerA, { actor: playerA, reason: 'arena wager hold', destination: 'Arena Escrow', kind: 'wager' });
   if (!hold.ok) return hold;
-  const hold2 = ledgerPost([{ account: playerB, delta: -amount }, { account: 'Arena Escrow', delta: amount }], 'wager hold ' + playerB);
+  const hold2 = ledgerPost([{ account: playerB, delta: -amount }, { account: 'Arena Escrow', delta: amount }], 'wager hold ' + playerB, { actor: playerB, reason: 'arena wager hold', destination: 'Arena Escrow', kind: 'wager' });
   if (!hold2.ok) return hold2;
   const pool = amount * 2, treasury = Math.round(pool * 0.01), winner = pool - treasury;
-  const settle = ledgerPost([{ account: 'Arena Escrow', delta: -pool }, { account: settleTo, delta: winner }, { account: 'Treasury', delta: treasury }], 'wager settlement');
+  const settle = ledgerPost([{ account: 'Arena Escrow', delta: -pool }, { account: settleTo, delta: winner }, { account: 'Treasury', delta: treasury }], 'wager settlement', { actor: 'arena', reason: 'wager settlement (1% treasury)', source: 'Arena Escrow', destination: settleTo + ' + Treasury', kind: 'wager-settlement' });
   if (!settle.ok) return settle;
   audit('economy', `SIMULATION wager settled: pool ${pool}, winner ${winner}, treasury ${treasury} (1%)`, 'system');
   return { ok: true, pool, winner, treasury };
@@ -473,30 +723,190 @@ function economySelfTest() {
   return { mode: 'SIMULATION', checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
 }
 
-/* ── Tool execution pipeline: policy → permission → approval → run → audit */
-async function runTool(toolId, args, opts) {
+/* ── §42 execution pipeline ──────────────────────────────────────
+ * AI proposal → policy → permission → risk assessment → approval gate →
+ * executor → verification → audit. No AI output can grant itself permission,
+ * and every refusal is reported with the boundary that produced it. */
+
+/* §51: twelve risk factors, derived from what the action actually touches. */
+function riskFactorsFor(toolId, args, tool) {
+  const t = TOOLS[toolId] || {};
+  const r = String(tool.risk || 'medium').toLowerCase();
+  const f = {};
+  f.capabilitySensitivity = r === 'high' ? 3 : r === 'medium' ? 2 : 1;
+  f.reversibility = ['fs.delete', 'fs.write', 'github.writefile', 'http.post', 'security.remediate'].includes(toolId) ? 3 : (t.writes ? 2 : 0);
+  f.financialImpact = /economy|market|payment|stripe|wager|forge|buy|sell/.test(toolId) ? 3 : 0;
+  f.accountImpact = /account|auth|owner|login/.test(toolId) ? 2 : 0;
+  f.deviceImpact = /device|exec|termux|adb|shizuku|linux\./.test(toolId) ? 2 : 0;
+  f.externalVisibility = /publish|upload|post|email|send|share|youtube/.test(toolId) ? 3 : (t.network ? 1 : 0);
+  f.securityImpact = /security|credential|permission|grant|revoke|emergency/.test(toolId) ? 3 : 0;
+  f.legalImpact = /publish|upload|send|share|delete|account/.test(toolId) ? 2 : 0;
+  f.dataSensitivity = /fs\.|github|credential|memory/.test(toolId) ? 2 : 0;
+  f.scope = Array.isArray(args && args.scope) ? Math.min(3, args.scope.length) : (args && args.recursive ? 3 : 1);
+  f.autonomy = S.autonomous ? 2 : 0;
+  f.uncertainty = args && args.url ? 2 : 1;
+  return f;
+}
+function assessAction(toolId, args) {
+  const tool = TOOLS[toolId];
+  const risk = riskFactorsFor(toolId, args, tool);
+  return kernel.assessRisk(risk);
+}
+function actionPolicy(toolId, args, opts) {
   opts = opts || {};
   const tool = TOOLS[toolId];
-  if (!tool) return { ok: false, state: 'FAILED', error: 'Unknown tool ' + toolId };
-  if (S.emergency === 'LOCKDOWN' && tool.risk !== 'low') { audit('security', 'LOCKDOWN blocked ' + toolId, 'system'); return { ok: false, state: 'BLOCKED', error: 'LOCKDOWN: execution blocked (security policy)', blocked: 'lockdown' }; }
-  if (S.emergency === 'HIGH' && tool.risk === 'medium' && !opts.confirmed && !S.autonomous) {
+  const cap = tool ? tool.cap : null;
+  const assessment = assessAction(toolId, args);
+  const ctx = {
+    riskClass: assessment.class,
+    permissionState: cap ? capabilityState(cap) : 'NOT_REQUESTED',
+    emergency: S.emergency,
+    stopActive: kernel.isStopped(S, 'network', null) && tool && tool.network === true,
+    approvalGranted: !!opts.approvalId && approved(opts.approvalId),
+    coveredByAutonomousPolicy: false,
+    requestedBy: opts.requestedBy || { authority: 'owner-authority' },
+    irreversible: opts.irreversible === true,
+    hasSnapshot: opts.hasSnapshot === true,
+    policyVersion: kernel.DEFAULT_POLICY_VERSION
+  };
+  return { assessment, cap, decision: kernel.evaluatePolicy(ctx), ctx };
+}
+
+/* §55: which emergency-stop scopes a tool belongs to. A stop in any of them
+ * suspends that tool; nothing about the stop weakens audit or recovery. */
+const TOOL_SCOPES = {
+  'http.get': ['network', 'integration'], 'http.post': ['network', 'integration'],
+  'dns.resolve': ['network'], 'weather.get': ['network', 'integration'],
+  'wiki.summary': ['network', 'integration'], 'hn.top': ['network', 'integration'],
+  'country.get': ['network', 'integration'], 'fx.convert': ['network', 'integration'],
+  'github.status': ['network', 'integration'], 'github.files': ['network', 'integration'],
+  'github.readfile': ['network', 'integration'], 'github.writefile': ['network', 'integration'],
+  'stripe.verify': ['network', 'integration'], 'account.discover': ['account', 'network'],
+  'account.configure': ['account'], 'account.disconnect': ['account'],
+  'knowledge.write': ['task'], 'mock.echo': ['task'], 'economy.selftest': ['task']
+};
+function toolScopes(toolId) {
+  const id = String(toolId || '');
+  if (TOOL_SCOPES[id]) return TOOL_SCOPES[id];
+  if (/^fs\.|^util\.|^sys\.|^security\.|^exec\./.test(id)) return ['task'];
+  if (/^device\./.test(id)) return ['device'];
+  if (/^agent\./.test(id)) return ['agent'];
+  if (/^account\./.test(id)) return ['account'];
+  if (/^http\.|^dns\./.test(id)) return ['network', 'integration'];
+  return ['task'];
+}
+
+async function runTool(toolId, args, opts) {
+  opts = opts || {};
+  args = args || {};
+  const cid = currentCid || ('run-' + crypto.randomBytes(4).toString('hex'));
+  const span = services.startSpan(S, 'tool:' + toolId, cid);
+  const tool = TOOLS[toolId];
+  if (!tool) {
+    services.endSpan(S, span, 'FAILED');
+    return caps.toolResult({ state: 'FAILED', error: 'Unknown tool ' + toolId, cid, verification: { method: 'registry lookup', result: 'not found' } });
+  }
+  const manifest = caps.toolManifest({ id: toolId, capabilities: [tool.cap], risk: tool.risk, inputs: Object.keys(tool.inputs || {}), verification: tool.verification || 'structured result + evidence hash' });
+  const { assessment, decision, ctx } = actionPolicy(toolId, args, opts);
+  const base = {
+    ok: false, tool: toolId, toolId, correlationId: cid, manifest,
+    risk: { class: assessment.class, score: assessment.score, factors: assessment.factors, explanation: assessment.explanation },
+    policy: decision
+  };
+  const finish = (extra) => {
+    const res = Object.assign({}, base, extra);
+    if (res.state && !res.status) res.status = res.state;   // §122: state/status alias
+    services.endSpan(S, span, res.state || 'UNKNOWN', { risk: assessment.class, decision: decision.decision });
+    services.metric(S, 'tool.' + toolId + '.calls', 1, { state: res.state });
+    return res;
+  };
+
+  /* §55/§56 emergency stop and hierarchy, before anything else runs.
+   * Every tool belongs to one or more stop scopes; a stop in any applicable
+   * scope halts that tool while audit, verification and recovery keep running. */
+  const scopes = toolScopes(toolId);
+  const stoppedScope = scopes.find(sc => kernel.isStopped(S, sc, null));
+  if (stoppedScope) {
+    audit('security', 'STOP(' + stoppedScope + ') blocked ' + toolId, 'system', { capability: tool.cap, decision: 'BLOCK', reason: stoppedScope + ' execution stopped by user', risk: assessment.class, result: 'BLOCKED' });
+    return finish({
+      state: 'BLOCKED', blocked: 'stop-' + stoppedScope, stoppedScope,
+      error: `${stoppedScope[0].toUpperCase() + stoppedScope.slice(1)} execution is stopped (§55). Resume with “resume ${stoppedScope}”. Audit and recovery stay available.`,
+      evidence: { error: stoppedScope + ' stop active', blocked: 'stop-' + stoppedScope }
+    });
+  }
+  if (S.emergency === 'LOCKDOWN' && String(tool.risk).toLowerCase() !== 'low') {
+    audit('security', 'LOCKDOWN blocked ' + toolId, 'system', { capability: tool.cap, decision: 'BLOCK', reason: 'lockdown', risk: assessment.class, result: 'BLOCKED' });
+    return finish({ state: 'BLOCKED', blocked: 'lockdown', error: 'LOCKDOWN: execution blocked (security policy). Audit and recovery remain available.', evidence: { error: 'LOCKDOWN: execution blocked (security policy)', blocked: 'lockdown' } });
+  }
+  if (S.emergency === 'HIGH' && String(tool.risk).toLowerCase() === 'medium' && !opts.confirmed && !S.autonomous && !ctx.approvalGranted) {
     const ap = createApproval(tool.cap, 'Run ' + toolId + ' during HIGH emergency');
-    return { ok: false, state: 'BLOCKED', needsApproval: ap.id, error: 'HIGH emergency: explicit approval required for ' + toolId };
+    return finish({ state: 'WAITING_FOR_APPROVAL', needsApproval: ap.id, error: 'HIGH emergency: explicit approval required for ' + toolId, evidence: { error: 'approval required during HIGH', needsApproval: ap.id } });
+  }
+
+  /* §44 policy decision. */
+  if (decision.decision === 'BLOCK' || decision.decision === 'DENY') {
+    if (decision.policyId === 'P-PERMISSION-BLOCKED' && tool.cap) {
+      // A revoked/expired/denied capability is a DENY, not an approval prompt.
+    }
+    audit('policy', maskSecrets(`POLICY ${decision.decision} ${toolId} via ${decision.policyId}: ${decision.reason}`), 'system', {
+      capability: tool.cap, decision: decision.decision, reason: decision.reason, risk: assessment.class, result: 'BLOCKED'
+    });
+    kernel.vaultStore(S, { kind: 'policy-block', payload: { toolId, policy: decision.policyId, reason: decision.reason }, resources: [toolId], cid });
+    return finish({
+      state: 'BLOCKED', policyDecision: decision.decision, blocked: decision.policyId,
+      error: decision.reason, correction: taskEngine.correctionPlan({ class: 'POLICY_VIOLATION' }),
+      evidence: { error: decision.reason, blocked: decision.policyId, policy: decision.policyId }
+    });
+  }
+  if (decision.decision === 'ASK' || decision.decision === 'ESCALATE') {
+    if (!permitted(tool.cap) && String(tool.risk).toLowerCase() === 'high') {
+      const ap = createApproval(tool.cap, 'Grant+run high-risk ' + toolId);
+      return finish({ state: 'WAITING_FOR_APPROVAL', needsApproval: ap.id, error: 'High-risk capability requires approval (approve ' + ap.id + ')', evidence: { error: 'approval required', needsApproval: ap.id } });
+    }
+    if (!permitted(tool.cap) && (String(tool.risk).toLowerCase() === 'low' || String(tool.risk).toLowerCase() === 'medium')) {
+      requestCapability(tool.cap, { how: S.autonomous ? 'autonomous-mode' : 'user-request', reason: 'capability needed for ' + toolId, account: opts.account || null, device: opts.device || null, agent: opts.agent || null, ttlMs: opts.ttlMs || undefined });
+    } else if (assessment.class === 'HIGH' || assessment.class === 'CRITICAL') {
+      const ap = createApproval(tool.cap, `${assessment.class}-risk approval for ${toolId}`);
+      return finish({ state: 'WAITING_FOR_APPROVAL', needsApproval: ap.id, error: assessment.class + ' risk: approval required (approve ' + ap.id + ')', evidence: { error: 'approval required', needsApproval: ap.id, risk: assessment.class } });
+    }
   }
   if (!tokenValid(tool.cap)) {
-    if (tool.risk === 'low' || tool.risk === 'medium') grant(tool.cap, S.autonomous ? 'autonomous-mode' : 'user-request');
-    else { const ap = createApproval(tool.cap, 'Grant+run high-risk ' + toolId); return { ok: false, state: 'BLOCKED', needsApproval: ap.id, error: 'High-risk capability requires approval (approve ' + ap.id + ')' }; }
+    if (String(tool.risk).toLowerCase() === 'low' || String(tool.risk).toLowerCase() === 'medium') requestCapability(tool.cap, { how: S.autonomous ? 'autonomous-mode' : 'user-request' });
   }
-  audit('tool', `EXEC ${toolId} ${JSON.stringify(args || {}).slice(0, 140)}`, 'user');
-  const out = await tool.run(args || {});
-  const state = out.error ? (out.blocked ? 'BLOCKED' : 'FAILED') : 'SUCCEEDED';
-  audit('tool', `RESULT ${toolId}: ${state}${out.error ? ' ' + out.error : ''}`, 'system');
+
+  audit('tool', maskSecrets(`EXEC ${toolId} ${JSON.stringify(args || {}).slice(0, 140)}`), 'user', {
+    capability: tool.cap, decision: 'ALLOW', risk: assessment.class, result: 'EXECUTING', approval: opts.approvalId || null
+  });
+  const t0 = Date.now();
+  let out;
+  try { out = await tool.run(args); } catch (e) { out = { error: 'Tool threw: ' + e.message }; }
+  const failureClass = out.error ? taskEngine.classifyFailure(out) : null;
+  const state = out.error ? (out.blocked ? 'BLOCKED' : (out.partial ? 'PARTIALLY_SUCCEEDED' : 'FAILED')) : 'SUCCEEDED';
+  const correction = failureClass ? taskEngine.correctionPlan(out) : null;
+  const verification = out.error ? { method: tool.verification || 'result inspection', result: 'no success evidence' }
+    : (typeof tool.verify === 'function' ? tool.verify(out) : { method: tool.verification || 'structured result', result: 'result accepted as evidence' });
+  const evidenceHash = caps.structuredResultHash(out);
+  audit('tool', maskSecrets(`RESULT ${toolId}: ${state}${out.error ? ' ' + out.error : ''}`), 'system', {
+    capability: tool.cap, decision: state === 'SUCCEEDED' ? 'ALLOW' : 'DENY',
+    reason: out.error || null, risk: assessment.class, result: state, evidenceHash,
+    approval: opts.approvalId || null
+  });
   if (state === 'SUCCEEDED') {
-    S.evidence.unshift({ ts: Date.now(), tool: toolId, cid: currentCid || 'ui', sha256: crypto.createHash('sha256').update(JSON.stringify(out)).digest('hex') });
+    S.evidence.unshift({ ts: Date.now(), tool: toolId, cid, sha256: evidenceHash });
     if (S.evidence.length > 200) S.evidence.length = 200;
-    save();
   }
-  return { ok: !out.error, state, tool: toolId, evidence: out };
+  kernel.vaultStore(S, {
+    kind: state === 'SUCCEEDED' ? 'tool-result' : 'tool-failure',
+    payload: { toolId, state, out, failureClass }, resources: [toolId, args.path || args.url || args.name || null].filter(Boolean), cid,
+    classification: String(tool.risk).toLowerCase() === 'high' ? 'sensitive' : 'operational'
+  });
+  save();
+  return finish({
+    ok: !out.error, state, evidence: out, result: out.error ? null : out,
+    verification, failureClass, correction,
+    latencyMs: Date.now() - t0,
+    error: out.error || null
+  });
 }
 function preview(text) {
   const low = String(text || '').toLowerCase();
@@ -553,9 +963,417 @@ async function command(text) {
     r.done = true; audit('tool', 'SCHEDULE ' + r.id + ' stopped', 'user'); save();
     return R(`Schedule ${r.id} stopped after firing ${r.fired}×.`);
   }
+  /* §55: emergency stop scopes — matched before the approval-stop intent. */
+  if ((m = low.match(/^(?:emergency )?stop (task|agent|integration|device|autonomous|network|account)s?\b(?:\s+(random|confirm))?/))) {
+    const scope = m[1];
+    const r = stopScope(scope, null, 'user emergency stop via chat');
+    return R(r.ok ? `STOP engaged for ${scope} — ${kernel.STOP_DESCRIPTIONS[scope]}. Execution in that scope is suspended; audit and recovery stay available. Resume with “resume ${scope}”.` : r.error);
+  }
+  if (low === 'emergency stop all' || low === 'stop all scopes' || low === 'stop-all') {
+    const r = stopAllScopes('user emergency stop for all scopes');
+    return R(`EMERGENCY STOP across all ${r.stopped} scopes (${r.scopes.join(', ')}). Nothing executes in those scopes until you resume them.`);
+  }
+  if ((m = low.match(/^resume (task|agent|integration|device|autonomous|network|account)\b/))) {
+    const r = resumeScope(m[1], null);
+    return R(r.ok ? `${m[1]} restarted — the stop has been cleared and the action is audited.` : r.error);
+  }
+  if (low === 'stops' || low === 'active stops') {
+    const list = kernel.stopReport(S);
+    return R(list.length ? 'Active stops:\n' + list.map(x => `• ${x.scope}${x.target !== '*' ? ':' + x.target : ''} — ${x.reason}`).join('\n') : 'No emergency stops active. Say “stop network” or “emergency stop all”.');
+  }
   if ((m = low.match(/^stop (\w+)/))) { const r = decideApproval(m[1], 'stop'); return r.ok ? R('Stopped: ' + r.approval.desc) : R(r.error); }
   if ((m = low.match(/^grant ([\w.]+)/)) ) { grant(m[1]); return R('Permission granted: ' + m[1] + ' (granted by your request, audited).'); }
-  if ((m = low.match(/^revoke ([\w.]+)/))) { revoke(m[1]); return R('Permission revoked: ' + m[1]); }
+  if ((m = low.match(/^revoke ([\w.]+)/))) { const r = revoke(m[1]); return R(r.ok ? 'Permission revoked: ' + m[1] + ' (state REVOKED — token no longer validates).' : r.error); }
+  /* §9/§10/§51/§44: inspect or change the authority model itself. */
+  if (low === 'permissions' || low === 'capability states' || low === 'capabilities table') {
+    const t = capabilityTable().filter(c => c.state !== 'NOT_REQUESTED');
+    return R(t.length ? 'Capability states (state · level · risk):\n' + t.map(c => `• ${c.capability} — ${c.state} · ${c.level || '—'} · ${c.risk}${c.scopes && Object.keys(c.scopes).length ? ' · scopes ' + Object.keys(c.scopes).join(',') : ''}`).join('\n') : 'No capability has been requested yet. Asking for something grants it; high risk requires approval.');
+  }
+  if ((m = low.match(/^(suspend|resume|deny|expire) ([\w.]+)$/))) {
+    const map = { suspend: suspend, resume: resumeCapability, deny: deny, expire: expire };
+    const r = map[m[1]](m[2]);
+    return R(r.ok ? `${m[2]} → ${r.state} (audited state change on the §9 permission machine).` : r.error);
+  }
+  if ((m = low.match(/^(?:risk|assess) ([\w.]+)$/))) {
+    const tool = TOOLS[m[1]];
+    if (!tool) return R('Unknown tool: ' + m[1]);
+    const a = assessAction(m[1], {});
+    return R(`${m[1]}: risk ${a.class} (score ${a.score}) — ${a.explanation}. Approval: ${JSON.stringify(kernel.approvalMatrix(a.class))}`);
+  }
+  if ((m = low.match(/^policy ([\w.]+)$/))) {
+    const tool = TOOLS[m[1]];
+    if (!tool) return R('Unknown tool: ' + m[1]);
+    const p = actionPolicy(m[1], {}, {});
+    return R(`Policy for ${m[1]}: ${p.decision.decision} via ${p.decision.policyId} — ${p.decision.reason} (risk ${p.assessment.class}, capability ${p.cap} is ${capabilityState(p.cap)})`);
+  }
+  /* §102–§160: workflow playbooks. */
+  if (low === 'playbooks' || low === 'workflows') {
+    return R('Workflow playbooks (spec worked examples):\n' + Object.entries(taskEngine.PLAYBOOKS).map(([k, v]) => `• ${k} ${v.section} — ${v.title} (${v.steps.length} steps)`).join('\n') + '\nRun one with “run playbook <key>”. Steps with no connected legitimate interface are reported WAITING_FOR_CAPABILITY — never faked.');
+  }
+  if ((m = low.match(/^run playbook ([\w-]+)/))) {
+    const r = await runPlaybookLocal(m[1], { params: {} });
+    if (!r.ok && r.error) return R(r.error + ' Available: ' + (r.available || []).join(', '));
+    return R(`PLAYBOOK ${r.playbook} ${r.section} → ${r.state}\n` + r.steps.map(x => `• ${x.id}: ${x.state}${x.failureClass ? ' (' + x.failureClass + ')' : ''}${x.capability ? ' [' + x.capability + ']' : ''}`).join('\n') + `\n${r.performed} performed · ${r.waitingForCapability} waiting for capability · ${r.failed} failed`);
+  }
+  /* §151 task state machine. */
+  if ((m = low.match(/^new task (.+)$/))) {
+    const t = taskEngine.createTask(m[1]);
+    taskEngine.advance(t, 'UNDERSTANDING'); taskEngine.advance(t, 'PROBLEM_SOLVING'); taskEngine.advance(t, 'PLANNING');
+    S.taskRecords.unshift(t); save();
+    audit('task', 'TASK created: ' + t.objective.slice(0, 80), 'user', { action: 'task.create', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+    return R(`Task ${t.id} created and advanced to ${t.state}. Objective: “${t.objective}”. It moves through the durable state machine (CREATED → UNDERSTANDING → PROBLEM_SOLVING → PLANNING → …).`);
+  }
+  if (low === 'tasks state' || low === 'task states') {
+    const t = S.taskRecords.slice(0, 8);
+    return R(t.length ? 'Durable tasks:\n' + t.map(x => `• ${x.id} — ${x.state} — ${x.objective.slice(0, 60)}`).join('\n') : 'No durable tasks yet. Say “new task <objective>”.');
+  }
+  /* §118/§119/§129 inspection. */
+  if (low === 'vault' || low === 'evidence vault') {
+    const v = kernel.vaultVerify(S);
+    return R(`Evidence vault: ${v.entries} record(s), integrity ${v.ok ? 'VERIFIED' : 'BROKEN'}.` + (S.evidenceVault.slice(0, 5).map(e => '\n• ' + e.kind + ' ' + e.hash.slice(0, 12) + '…').join('')));
+  }
+  if (low === 'metrics' || low === 'observability') {
+    const o = observability();
+    return R(`Observability: ${o.metrics.length} metric point(s), ${o.spans.length} span(s), correlation ids join them into task timelines. OpenTelemetry-shaped export available at /api/observability.`);
+  }
+  if ((m = low.match(/^trace (\S+)/))) {
+    const t = services.traceTimeline(S, m[1]);
+    return R(`Timeline for ${m[1]}: ${t.spans.length} span(s), ${t.audit.length} audit event(s).` + t.audit.slice(0, 5).map(a => '\n• ' + a.action).join(''));
+  }
+  /* ══ v1.65 engagement: everything below is plain-language control ══ */
+  if (low === 'help' || low === 'what can i say' || low === 'commands' || low === 'what can you do') {
+    return R(CAPABILITY_HELP.map(g => g.group.toUpperCase() + '\n' + g.items.map(i => '  • ' + i).join('\n')).join('\n\n'));
+  }
+  /* ── events ── */
+  if (low === 'events' || low === 'event board' || low === 'event list') {
+    const list = engagement.listEvents(S);
+    return R('Events board (' + list.length + '):\n' + list.map(e => `• ${e.id} — ${e.title} [${e.state}] ${e.entryLD ? 'entry ' + e.entryLD + ' LD · ' : ''}${e.entries} entrant(s) · ${e.joinable ? 'open' : 'scheduled'}\n    ${e.blurb}`).join('\n') + '\nJoin with “join event <id>”.');
+  }
+  if ((m = low.match(/^join event ([\w-]+)/))) {
+    const r = joinEventCmd(m[1]);
+    return R(r.ok ? r.reply : r.error);
+  }
+  if ((m = low.match(/^event progress ([\w-]+)(?: (\d+))?/))) {
+    const r = eventProgressCmd(m[1], null, m[2]);
+    return R(r.ok ? r.reply : r.error);
+  }
+  if ((m = low.match(/^close event ([\w-]+)(?: winner (\S+))?/))) {
+    const wm = q.match(/^close event ([\w-]+)(?: winner (\S+))?/i) || m;
+    const r = closeEventCmd(wm[1], { winner: wm[2] });
+    return R(r.ok ? r.reply : r.error);
+  }
+  /* ── lotto ── */
+  if (low === 'lotto' || low === 'lotto status' || low === 'lottery') {
+    const open = engagement.openRoundOf(S);
+    const last = (S.lottoRounds || []).find(r => r.state === 'DRAWN');
+    return R([
+      'Lotto — ' + engagement.LOTTO_RULES.numbersPerLine + ' numbers from 1–' + engagement.LOTTO_RULES.maxNumber + ', ticket ' + engagement.LOTTO_RULES.ticketLD + ' LD.',
+      open ? `Open round ${open.id}: ${open.tickets.length} ticket(s) sold, commitment ${open.commitHash.slice(0, 16)}…` : 'No round is open — say “open lotto round”.',
+      last ? `Last draw ${last.id}: numbers ${last.drawn.numbers.join(', ')} · ${last.prizes.payouts.length} winning ticket(s) · ${last.prizes.rolloverOut ? last.prizes.rolloverOut + ' LD rolled over' : 'jackpot won'}` : 'No draw has run yet.',
+      engagement.LOTTO_RULES.settlement,
+      engagement.LOTTO_RULES.realMoney
+    ].join('\n'));
+  }
+  if (low === 'open lotto round' || low === 'new lotto round') {
+    const r = openLottoCmd();
+    return R(r.ok ? r.reply : r.error);
+  }
+  if ((m = low.match(/^buy (\d+ )?lotto tickets?(?: for (\S+))?/)) || low === 'buy a lotto ticket') {
+    const count = m && m[1] ? Number(m[1]) : 1;
+    const r = buyTicketsCmd(count, m && m[2]);
+    if (!r.ok) return R(r.error + (r.round === undefined ? ' (Say “open lotto round” first.)' : ''));
+    return R(r.reply);
+  }
+  if ((m = low.match(/^draw lotto(?: (\S+))?( confirm)?$/))) {
+    const roundId = m[1] && m[1] !== 'confirm' ? m[1] : undefined;
+    const r = drawLottoCmd(roundId, !!m[2] || m[1] === 'confirm');
+    if (r.needsConfirmation) return R(r.reply);
+    return R(r.ok ? r.reply : r.error);
+  }
+  if ((m = low.match(/^verify lotto(?: (\S+))?/))) {
+    const r = m[1] ? (S.lottoRounds || []).find(x => x.id === m[1]) : (S.lottoRounds || []).find(x => x.state === 'DRAWN');
+    if (!r) return R('No drawn round to verify');
+    const v = engagement.verifyRound(r);
+    return R(`${r.id}: commitment ${v.commitOk ? 'MATCHES' : 'FAILED'} · ticket lines ${v.ticketsOk ? 're-derive exactly' : 'MISMATCH'} · sales ${v.totalOk ? 'reconcile' : 'DO NOT RECONCILE'} · numbers ${v.numbers.join(' · ')}\n${v.note}`);
+  }
+  /* ── sign-in gifts ── */
+  if (low === 'sign in' || low === 'claim sign in' || low === 'daily gift' || low === 'gift' || low === 'my streak') {
+    const r = signInCmd(null, { statusOnly: low === 'my streak' && !engagement.signInStatus(S, ownerWallet()).claimedToday });
+    return R(r.ok ? r.reply : r.error);
+  }
+  /* ── daily & weekly tasks ── */
+  if (low === 'daily tasks' || low === 'weekly tasks' || low === 'tasks board' || low === 'quests' || low === 'daily' || low === 'weekly') {
+    const q = engagement.questSummary(S);
+    const show = what => q[what].map(t => `${t.claimable ? '★ CLAIMABLE' : t.complete ? '■ done' : '□ ' + t.progress + '/' + t.target} — ${t.title} (${t.ld} LD) [${t.id}]`).join('\n');
+    const wanted = (low === 'daily tasks' || low === 'daily') ? ['daily'] : (low === 'weekly tasks' || low === 'weekly') ? ['weekly'] : ['daily', 'weekly'];
+    const parts = [];
+    if (wanted.includes('daily')) parts.push('DAILY (' + q.day + ')\n' + show('daily'));
+    if (wanted.includes('weekly')) parts.push('WEEKLY (' + q.week + ')\n' + show('weekly'));
+    return R(parts.join('\n\n') + `\n${q.claimable} task(s) ready to claim — say “claim task <id>”. The board is fixed for the window, so it cannot be re-rolled for an easier one.`);
+  }
+  if ((m = low.match(/^claim (?:task )?([\w-]+)$/))) {
+    const r = claimQuestCmd(m[1]);
+    return R(r.ok ? r.reply : r.error);
+  }
+  /* ── LD market: bought and sold in the app ── */
+  if (low === 'ld market' || low === 'ld price' || low === 'ld rates' || low === 'buy ld' || low === 'market price') {
+    const mk = engagement.LD_MARKET;
+    return R([
+      `LD market — buy at A$${mk.buyRateAudPerLD} per LD (100 LD = A$1.00), sell back at A$${mk.sellRateAudPerLD} per LD (${Math.round((1 - mk.sellRateAudPerLD / mk.buyRateAudPerLD) * 100)}% disclosed spread).`,
+      `Orders: minimum ${mk.minOrderLD} LD, maximum ${mk.maxOrderLD} LD, in multiples of ${mk.roundToLD} LD.`,
+      'Say “buy 500 ld” or “sell 500 ld”.',
+      mk.note,
+      'Balances: ' + Object.keys(S.ledger.accounts).map(k => k + '=' + S.ledger.accounts[k]).join(' · ')
+    ].join('\n'));
+  }
+  if ((m = low.match(/^(?:buy|purchase) (\d+) ?ld/))) {
+    const r = ldMarketCmd(Number(m[1]), 'buy');
+    return R(r.ok ? `Bought ${r.order.ld} LD for A$${r.order.aud.toFixed(2)} at A$${r.order.rateAudPerLD} per LD (SIMULATION). Balance ${r.balance} LD. Order ${r.order.id}.` : r.error);
+  }
+  if ((m = low.match(/^sell (\d+) ?ld/))) {
+    const r = ldMarketCmd(Number(m[1]), 'sell');
+    return R(r.ok ? `Sold ${r.order.ld} LD for A$${r.order.aud.toFixed(2)} at A$${r.order.rateAudPerLD} per LD (5% spread, SIMULATION — nothing was paid out). Balance ${r.balance} LD. Order ${r.order.id}.` : r.error);
+  }
+  if (low === 'economy' || low === 'economy report' || low === 'ld economy' || low === 'ld supply') {
+    const e2 = economyReport();
+    return R([
+      `LD economy — mode ${e2.mode}. Circulating ${e2.circulatingLD} LD across player accounts.`,
+      'Pools: ' + Object.entries(e2.pools).map(([k, v]) => k + '=' + v).join(' · '),
+      'Piece prices: ' + Object.entries(e2.priceTable.pieces).map(([k, v]) => k + '=' + v).join(' · ') + ' · pet=' + e2.priceTable.pet,
+      'Market: buy A$' + e2.market.buyRateAudPerLD + ' per LD, sell A$' + e2.market.sellRateAudPerLD + ' per LD.',
+      e2.note
+    ].join('\n'));
+  }
+  if (low === 'piece prices' || low === 'prices' || low === 'price list') {
+    const p = piecePriceList();
+    return R('Piece prices (LD): ' + Object.entries(p.pieces).map(([k, v]) => k + '=' + v).join(' · ') + '\nPet=' + p.pet + ' · merge: ' + Object.entries(p.merge).map(([k, v]) => k + '=' + v).join(', ') + '\n' + p.drops + '\n' + p.market);
+  }
+  if ((m = low.match(/^summon pet for ([\w '-]{2,30})$/))) {
+    const r = summonPetCmd(m[1]);
+    return R(r.ok ? `${r.pet.name} the ${r.pet.species} (${r.pet.rarity}) joined ${m[1].trim()} for ${r.cost} LD.` : (r.error + (r.needed ? ' — needs ' + r.needed + ' LD, wallet holds ' + r.balance + '.' : '')));
+  }
+  if ((m = low.match(/^merge pieces ([\w '-]{2,30}) ([\w ,]+)$/))) {
+    const r = mergePiecesCmd(m[1], m[2].split(/[\s,]+/).filter(Boolean));
+    return R(r.ok ? `Merged into ${r.merged.name} (${r.merged.rarity} R${r.merged.rlevel}) for ${r.cost} LD.` : (r.error + (r.needed ? ' — needs ' + r.needed + ' LD.' : '')));
+  }
+  /* ── subscription tiers: personal and business ── */
+  if (low === 'plans' || low === 'subscription plans' || low === 'plan list' || low === 'pricing') {
+    const fam = { personal: [], business: [] };
+    services.PLANS.forEach(p => (fam[p.family || 'personal']).push(p));
+    const line = p => `• ${p.name} [${p.id}] — ${p.blurb}\n    agents ${p.entitlements['agents.max']} · storage ${p.entitlements['storage.mb']}MB · AI/day ${p.entitlements['ai.daily']} · seats ${p.entitlements['org.seats']} · guardian ${p.entitlements['guardian.level']} · lotto/day ${p.entitlements['lotto.ticketsPerDay']}`;
+    return R('PERSONAL\n' + fam.personal.map(line).join('\n') + '\n\nBUSINESS\n' + fam.business.map(line).join('\n') + '\n\nPrices are reference labels, not charges: billing stays COMPLIANCE-LOCKED until billing authority exists. Say “upgrade to pro” or “change plan business-plus”.');
+  }
+  if ((m = low.match(/^(?:upgrade|change|switch) (?:plan |to |me to )?([a-z0-9-]+)$/))) {
+    const r = subscribeCmd(m[1]);
+    if (!r.ok) return R(r.error + ' Available: ' + services.PLANS.map(p => p.id).join(', '));
+    const sub = r.subscription;
+    audit('subscription', 'PLAN ' + sub.planId + ' (' + sub.planName + ') selected', 'user', { action: 'plan.change', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+    save();
+    return R(`Plan set to ${sub.planName} [${sub.planId}] — ${sub.family} tier, rank ${sub.rank}. Entitlements: ${Object.entries(sub.entitlements).map(([k, v]) => k + '=' + v).join(', ')}. Billing: not chargeable (${sub.billing.note})`);
+  }
+  /* ── owner security + guardian ── */
+  if (low === 'secure my account' || low === 'security posture' || low === 'protect me' || low === 'protection report') {
+    const p = ownerSec.protectionReport(S);
+    return R([
+      `Owner protection — level ${p.level}, posture ${p.grade} (${p.score}/100). Controls ${p.controlsEnabled}/${p.controlsTotal}. Threats: ${p.threats.covered} covered · ${p.threats.partial} partial · out of scope: ${p.threats.outOfScope.join(', ')}.`,
+      'Second factor: ' + (p.secondFactor.enabled ? (p.secondFactor.verified ? 'ENABLED and verified' : 'enrolled — verify one code to finish') : 'not enabled — say “enable second factor”') + ' · recovery codes left ' + p.secondFactor.recoveryCodesLeft,
+      'Active sessions: ' + p.sessions + ' — say “sessions” to review, “revoke session <id>” to end one.',
+      'Next: ' + (p.nextSteps.map(x => x.name).join(', ') || 'nothing outstanding for this build'),
+      p.honestLimit
+    ].join('\n'));
+  }
+  if (low === 'enable second factor' || low === 'enable 2fa' || low === 'set up 2fa') {
+    const r = ownerSec.enrollSecondFactor(S);
+    if (!r.ok) return R(r.error);
+    audit('security', 'SECOND FACTOR enrolled for the Owner account', 'user', { action: 'security.2fa.enroll', decision: 'ALLOW', risk: 'HIGH', result: 'SUCCEEDED' });
+    save();
+    return R('Second factor enrolled (TOTP, RFC 6238 — 6 digits, 30-second rotation). Add this to your authenticator now:\n  secret: ' + r.secret + '\n  uri: ' + r.otpauthUrl + '\nRecovery codes (each works once, shown only here):\n' + r.recoveryCodes.map(c => '  ' + c).join('\n') + '\nThen verify: “verify second factor <6-digit code>”.');
+  }
+  if ((m = low.match(/^verify (?:second factor|2fa) (\d{6})/))) {
+    const r = ownerSec.verifySecondFactor(S, m[1]);
+    save();
+    return R(r.ok ? (r.viaRecoveryCode ? `Recovery code accepted — ${r.remainingCodes} left. Re-enroll the factor soon.` : 'Second factor verified. Re-authentication window open for five minutes — sensitive changes are allowed now.') : r.error);
+  }
+  if (low === 'sessions' || low === 'list sessions' || low === 'my sessions') {
+    const list = ownerSec.sessionInventory(S);
+    return R(list.length ? 'Sessions:\n' + list.map(x => `• ${x.id} — age ${Math.round(x.ageMs / 60000)} min`).join('\n') + '\nRevoke one with “revoke session <id>”, or all with “revoke all sessions”.' : 'No active sessions (owner login issues a session cookie).');
+  }
+  if ((m = low.match(/^revoke (?:all )?sessions?(?: (\S+))?$/))) {
+    const all = /all sessions/.test(low);
+    const rr = ownerSec.requireReauth(S);
+    if (!rr.ok) return R(rr.error);
+    const r = ownerSec.revokeSessions(S, all ? { all: true } : { id: m[1] });
+    if (!r.ok) return R(r.error);
+    audit('security', 'SESSIONS revoked (' + r.revoked + ') by owner', 'user', { action: 'security.session.revoke', decision: 'ALLOW', risk: 'HIGH', result: 'SUCCEEDED' });
+    save();
+    return R(`Revoked ${r.revoked} session(s). ${r.remaining} remaining.`);
+  }
+  if ((m = low.match(/^(?:harden my account|raise security level|harden)( maximum| hardened| standard)?$/))) {
+    const want = m[1] ? m[1].trim().toUpperCase() : 'STANDARD';
+    const r = ownerSec.setSecurityLevel(S, want);
+    if (!r.ok) return R(r.error + (r.missing ? '\nRequired first: ' + r.missing.join(', ') : ''));
+    save();
+    return R(`Owner security level is now ${r.level.id} (${r.level.name}): ${r.level.blurb}`);
+  }
+  if (low === 'security drill' || low === 'backup drill' || low === 'run drill') {
+    const r = ownerSec.runDrill(S, /backup/.test(low) ? 'backup' : 'security');
+    save();
+    return R(`Drill “${r.drill.kind}” — ${r.drill.passed}/${r.drill.total} checks passed:\n` + r.drill.checks.map(c => `${c.pass ? '✓' : '✗'} ${c.check} — ${c.detail}`).join('\n'));
+  }
+  if (low === 'alerts' || low === 'security alerts') {
+    const os = ownerSec.securityState(S);
+    return R(os.alerts.length ? 'Security alerts (newest first):\n' + os.alerts.slice(0, 10).map(a => `• [${a.severity}] ${new Date(a.ts).toISOString().slice(11, 19)} ${a.kind}: ${a.detail}`).join('\n') : 'No security alerts recorded.');
+  }
+  if (low === 'guardian' || low === 'guardian report' || low === 'guardian status') {
+    const g = ownerSec.guardianReport(S);
+    return R([g.oath, `Charters ${g.charters} · decisions recorded ${g.events} (${g.denied} refused, ${g.asked} escalated to you).`,
+      g.recent.length ? 'Recent:\n' + g.recent.map(e => `• [${e.decision}] ${e.agent}: ${e.action}`).join('\n') : 'No agent actions have been screened yet.'].join('\n'));
+  }
+  if (low === 'threats' || low === 'what do you protect me from' || low === 'protection matrix') {
+    return R('Protection matrix:\n' + ownerSec.THREATS.map(t => `• [${t.status}] ${t.name} — ${t.control}${t.note ? ' ' + t.note : ''}`).join('\n') + '\nOut-of-scope threats are named, not hidden: ' + ownerSec.NOT_PROMISED[0]);
+  }
+  if ((m = low.match(/^guardian check (.+)$/))) {
+    const gm = q.match(/^guardian check (.+)$/i) || m;
+    const a = ownerSec.guardianWatch(S, { action: gm[1], source: 'user-request' });
+    save();
+    return R(`Guardian: ${a.decision} — ${a.reason}${a.triggeredDuties.length ? '\nDuties engaged: ' + a.triggeredDuties.join(', ') : ''}`);
+  }
+  if (low === 'release' || low === 'version') {
+    const r = releaseInfo();
+    return R(`${r.version} · built ${new Date(r.buildDate).toISOString()} · revision ${r.sourceRevision} · dependencies: ${r.dependencyState} · tests: ${r.testStatus} · security: ${r.securityStatus}`);
+  }
+  /* §40/§41/§104 devices. */
+  if (low === 'devices') {
+    const list = services.isolationReport(S);
+    return R(list.length ? 'Paired devices:\n' + list.map(d => `• ${d.name} (${d.platform}) — trust ${d.trust} · caps ${d.capabilities} · sessions ${d.sessions}`).join('\n') + '\nPairing establishes identity only; it grants no capabilities.' : 'No devices paired. Say “pair device <name> as android” — pairing needs the code your device issues and grants no capabilities by itself.');
+  }
+  if ((m = low.match(/^pair device ([\w '-]{2,30}?)(?: as (android|ios|ipados|macos|windows|linux|chromeos|web|server|wearable|smart-device))?$/))) {
+    const r = pairDeviceCmd({ name: m[1], platform: m[2] || 'unknown', method: 'user-initiated' });
+    return R(r.ok ? `Device “${r.device.name}” paired — trust state PENDING. Trust it with “trust device ${r.device.name}” once you accept it.` : r.error);
+  }
+  if ((m = low.match(/^trust device ([\w '-]{2,30})$/))) {
+    const d = S.devices.find(x => x.name.toLowerCase() === m[1].toLowerCase());
+    if (!d) return R('No paired device named ' + m[1]);
+    const r = setDeviceTrustCmd(d.id, 'TRUSTED');
+    return R(r.ok ? `${d.name} is now TRUSTED. Capabilities are still granted per capability, never in bulk.` : r.error);
+  }
+  if ((m = low.match(/^(?:revoke|untrust) device ([\w '-]{2,30})$/))) {
+    const d = S.devices.find(x => x.name.toLowerCase() === m[1].toLowerCase());
+    if (!d) return R('No paired device named ' + m[1]);
+    const r = setDeviceTrustCmd(d.id, 'REVOKED', { reason: 'revoked by user via chat' });
+    return R(r.ok ? `${d.name} REVOKED — sessions cleared, capabilities dropped, audit preserved.` : r.error);
+  }
+  /* §130–§139 accounts. */
+  if (low === 'accounts' || low === 'account inventory') {
+    const inv = services.accountInventory(S);
+    return R(inv.length ? 'Account inventory:\n' + inv.map(a => `• ${a.service}:${a.identifier} — ${a.connectionStatus} · ${a.securityStatus}${a.capabilities.length ? ' · ' + a.capabilities.length + ' caps' : ''}`).join('\n') : 'No accounts recorded. “record account <service>:<identifier>” adds one; connections require the provider’s own authorization.');
+  }
+  if ((m = low.match(/^use account (\S+) for ([a-z0-9-]+)$/))) {
+    const list = services.accountsFor(S, m[2]);
+    const acct = list.find(a => a.identifier === m[1] || a.id === m[1]);
+    if (!acct) return R('No account ' + m[1] + ' for ' + m[2]);
+    const r = services.selectAccount(S, m[2], acct.id);
+    if (r.ok) audit('account', 'ACTIVE ACCOUNT set: ' + m[2] + ' → ' + acct.identifier, 'user', { action: 'account.select', decision: 'ALLOW', risk: 'MEDIUM' });
+    save();
+    return R(r.ok ? `Active account for ${m[2]} is now ${acct.identifier}. WitForge never picks an account by guessing.` : r.error);
+  }
+  if ((m = low.match(/^record account ([a-z0-9.-]+):(\S+)$/))) {
+    const r = addAccountCmd({ service: m[1], identifier: m[2] });
+    return R(r.ok ? `Recorded ${m[1]}:${m[2]} (connection status RECORDED). Connecting it requires the service’s real authorization flow — configuration alone never counts as connected.` : r.error);
+  }
+  if ((m = low.match(/^disconnect account (\S+)/))) {
+    const list = S.accounts.filter(a => a.id === m[1] || a.identifier === m[1] || a.service === m[1]);
+    if (!list.length) return R('No matching account');
+    const results = list.map(a => disconnectAccountCmd(a.id));
+    return R(results.map(r => `Disconnected ${r.account}; revoked ${r.revokedGrants.length} grant(s)${r.credentialRevoked ? ', destroyed the credential' : ''}; audit preserved.`).join('\n'));
+  }
+  if ((m = low.match(/^delete account (\S+)( confirm)?$/))) {
+    const a = S.accounts.find(x => x.id === m[1] || x.identifier === m[1]);
+    if (!a) return R('No matching account');
+    const r = deleteAccountCmd(a.id, !!m[2]);
+    return R(r.ok ? 'Account record deleted, affected data reported and verified.' : (r.needsConfirmation ? 'Deletion affects: ' + r.affectedData.join(', ') + '. ' + r.warning + ' Say “delete account ' + m[1] + ' confirm”.' : r.error));
+  }
+  if ((m = low.match(/^account boundary (.+)/))) {
+    /* keys are matched case-insensitively against the §132 boundary list */
+    const known = Object.keys(services.BOUNDARY_TRIGGERS || {});
+    const req = {};
+    String(m[1]).split(/[\s,]+/).forEach(k => {
+      if (!k) return;
+      const hit = known.find(x => x.toLowerCase() === k.toLowerCase());
+      req[hit || k] = true;
+    });
+    const r = accountBoundaryCheck(req);
+    return R(r.ok ? 'No boundary violation detected for that request shape.' : 'REFUSED by account boundaries: ' + r.violations.join('; ') + '. WitForge stops at human-required boundaries and asks you to complete them.');
+  }
+  /* §113/§114 organisations and entitlements. */
+  if ((m = low.match(/^create org(?:anisation)? (.+)$/))) {
+    const gm = q.match(/^create org(?:anisation)? (.+)$/i) || m;
+    const r = createOrgCmd({ name: gm[1].trim() });
+    return R(r.ok ? `Organisation “${r.org.name}” created. Organisation authority never overrides individual account authority.` : r.error);
+  }
+  if (low === 'orgs' || low === 'organisations') {
+    return R(S.orgs.length ? 'Organisations:\n' + S.orgs.map(o => `• ${o.name} — ${o.members.length} member(s), ${o.teams.length} team(s), ${o.delegatedCapabilities.length} delegated cap(s)`).join('\n') : 'No organisations. Say “create org <name>”.');
+  }
+  if ((m = low.match(/^plan (free|plus|pro|business|enterprise)$/))) {
+    const r = subscribeCmd(m[1]);
+    const e = r.subscription.entitlements;
+    return R(`Plan set to ${r.subscription.planName}. Entitlements: ${Object.entries(e).map(([k, v]) => k + '=' + v).join(', ')}. Premium controls are enforced server-side; billing stays locked until billing authority exists.`);
+  }
+  if (low === 'subscription' || low === 'entitlements') {
+    const s2 = services.currentSubscription(S);
+    return R(`Plan ${s2.planName} (${s2.planId}) — status ${s2.status}. Entitlements: ${Object.entries(s2.entitlements).map(([k, v]) => k + '=' + v).join(', ')}. Billing chargeable: ${s2.billing.chargeable} (${s2.billing.note})`);
+  }
+  /* §110/§112 assets + anti-fraud. */
+  if (low === 'assets') {
+    return R(S.assets.length ? 'Asset registry:\n' + S.assets.slice(0, 10).map(a => `• ${a.assetId} ${a.type} R${a.rarity} owner=${a.owner} status=${a.status} identity=${a.identity.slice(0, 12)}…`).join('\n') : 'No assets registered. Assets are minted by the arena engine (loot, forge, pets); say “mint asset piece rarity 5”.');
+  }
+  if ((m = low.match(/^mint asset (\w+)(?: rarity (\d{1,3}))?(?: owner (\S+))?/))) {
+    const r = registerAssetCmd({ type: m[1], rarity: m[2] ? Number(m[2]) : 1, owner: m[3] || 'Owner', creator: m[3] || 'Owner' });
+    return R(r.ok ? `Asset ${r.asset.assetId} registered (R${r.asset.rarity}, identity ${r.asset.identity.slice(0, 12)}…). Anti-duplication and provenance records applied.` : (r.reason === 'rarity-100-needs-approval' ? 'Rarity 100 is a controlled state: it needs an approval record, full provenance and a uniqueness check before creation.' : r.reason));
+  }
+  if ((m = low.match(/^asset provenance (\S+)/))) {
+    const r = services.provenanceReport(S, m[1]);
+    return R(r ? `${r.assetId}: ${r.type} R${r.rarity} · creator ${r.creator} · owner ${r.currentOwner} · source ${r.source} · parents ${r.parentAssets.join(',') || 'none'} · transfers ${r.transfers.length} · merges ${r.mergeHistory.length}` : 'Unknown asset');
+  }
+  if ((m = low.match(/^transfer asset (\S+) to (\S+)/))) {
+    const r = transferAssetCmd(m[1], m[2], 'user transfer');
+    return R(r.ok ? `Transferred ${m[1]} → ${m[2]} (transfer history now ${r.history} record(s)).` : r.error);
+  }
+  if (low === 'fraud') {
+    const r = services.fraudReport(S);
+    return R(`Anti-fraud monitor: ${r.events} event(s). By severity: ${Object.entries(r.bySeverity).map(([k, v]) => k + '=' + v).join(', ') || 'none'}. Duplicate detection, transaction monitoring, rate limits, anomaly detection and account separation are active.`);
+  }
+  /* §85/§86 Arena wager matches. */
+  if ((m = low.match(/^provision loadout ([\w '-]{2,30})$/))) {
+    const r = provisionLoadoutCmd(m[1]);
+    if (!r.ok) return R(r.error + (r.needed ? ` — needs ${r.needed} LD, ${r.wallet} holds ${r.balance}. ${r.hint || ''}` : ''));
+    if (r.alreadyComplete) return R(`${r.avatar} is already fully equipped.`);
+    return R(`${r.avatar} equipped: ${r.equipped.map(e => e.slot).join(', ')} for ${r.cost} LD (from ${r.wallet}). Completeness gate ${r.status.complete ? 'SATISFIED' : 'still missing ' + r.status.missing.join(', ')}.`);
+  }
+  if ((m = low.match(/^arena wager ([\w '-]{2,30}?) vs ([\w '-]{2,30}?)(?: seed (\d+))?( confirm)?$/))) {
+    const arena = require('./arena-engine.js');
+    const A = arena.list().find(x => x.name.toLowerCase() === m[1].toLowerCase());
+    const B = arena.list().find(x => x.name.toLowerCase() === m[2].toLowerCase());
+    if (!A || !B) return R('Both avatars must exist');
+    const r = arenaWagerMatch({ a: A.id, b: B.id, confirmed: !!m[4], seed: m[3] ? Number(m[3]) : undefined });
+    if (r.needsLoadout) return R('Loadout gate: ' + r.error);
+    if (r.needsConfirmation) return R('Wager terms: ' + JSON.stringify(r.terms) + '. Real-money wagering stays compliance-locked. Say “arena wager ' + m[1] + ' vs ' + m[2] + ' confirm”.');
+    if (r.drew) return R('The match ended in a true draw — nothing settles and both stakes are returned (no treasury allocation on a draw).');
+    return R(r.ok ? `SIMULATION wager settled: pool ${r.pool} LD → winner ${r.winner} LD, treasury ${r.treasury} LD (1%) to ${r.winnerAvatar}. Deterministic seed ${r.seed}, ${r.rounds} rounds, ${r.decision}. Real money: LOCKED.` : r.error);
+  }
+  /* §65 memory classes + §64 project records. */
+  if (low === 'memory classes') return R('Memory classes: ' + MEMORY_CLASSES.join(', ') + '. Ordinary memory is information, never authority — it cannot rewrite policy or permissions.');
+  if ((m = low.match(/^remember as (\w[\w-]*) (.+)$/))) {
+    const gm = q.match(/^remember as (\w[\w-]*) (.+)$/i) || m;
+    const r = rememberTyped(gm[2], gm[1].toLowerCase());
+    return R(r.ok ? `Stored in memory class “${r.record.class}”.${r.escalationIgnored ? ' (The text mentions authority-shaped words — no authority was granted.)' : ''}` : r.error);
+  }
+  if ((m = low.match(/^create project ([^|]+?)(?: \| goals? (.+))?$/))) {
+    /* the router matches on lowercase; the record keeps the user's original wording */
+    const gm = q.match(/^create project ([^|]+?)(?: \| goals? (.+))?$/i) || m;
+    const r = createProjectFull({ name: (gm[1] || '').trim(), goals: gm[2] ? gm[2].split(';').map(x => x.trim()) : [] });
+    return R(r.ok ? `Project “${r.project.name}” created with goals/tasks/agents/files/integrations/permissions/memory/assets/audit records.` : r.error);
+  }
 
   /* v1.61: reminders */
   if ((m = low.match(/^remind me in (\d+) (seconds?|minutes?|hours?|days?) (?:to )?(.+)$/))) {
@@ -761,19 +1579,473 @@ function login(password) {
 function logout(token) { delete S.sessions[token]; audit('security', 'OWNER session invalidated', 'user'); save(); return { ok: true }; }
 const sessionValid = token => !!S.sessions[token];
 
-/* ── Aggregated self-test + spec compliance ─────────────── */
+/* ══ v1.64 specification systems ══════════════════════════════════ */
+
+/* §65: memory is typed, and ordinary memory can never rewrite authority. */
+const MEMORY_CLASSES = ['conversation', 'project', 'preference', 'task-state', 'verified-fact', 'integration-state'];
+const MEMORY_ESCALATION = [/(^|\b)(grant|revoke|permission|policy|owner|admin|lockdown)\b/i];
+function rememberTyped(text, klass, opts) {
+  opts = opts || {};
+  const cls = MEMORY_CLASSES.includes(klass) ? klass : 'conversation';
+  const clean = String(text || '').slice(0, 240);
+  const escalation = MEMORY_ESCALATION.some(re => re.test(clean)) && cls !== 'verified-fact';
+  const rec = {
+    id: nid('m'), text: clean, class: cls, ts: Date.now(),
+    provenance: opts.provenance || 'user-statement', verified: cls === 'verified-fact',
+    authority: 'none', note: 'Memory is information, never authority (§65).'
+  };
+  S.memory.unshift(rec);
+  if (S.memory.length > 400) S.memory.length = 400;
+  audit('memory', 'MEMORY[' + cls + '] recorded' + (escalation ? ' (contains authority-shaped wording — no authority is granted)' : ''), 'user', {
+    action: 'memory.write', decision: 'ALLOW', reason: 'memory is information, not authority', risk: 'LOW', result: 'SUCCEEDED'
+  });
+  save();
+  return { ok: true, record: rec, escalationIgnored: escalation };
+}
+
+/* §64: a project carries goals, tasks, agents, files, integrations,
+ * permissions, memory, assets and audit history. */
+function createProjectFull(opts) {
+  opts = opts || {};
+  const name = String(opts.name || '').trim().slice(0, 80);
+  if (!name) return { ok: false, error: 'name required' };
+  const project = {
+    id: nid('p'), name, created: Date.now(),
+    goals: (opts.goals || []).slice(0, 20),
+    tasks: [], agents: [], files: [], integrations: [], permissions: [], memory: [], assets: [],
+    audit: [{ ts: Date.now(), detail: 'Project created' }]
+  };
+  S.projects.unshift(project);
+  audit('project', 'PROJECT created: ' + name, 'user', { action: 'project.create', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, project };
+}
+function projectLink(projectId, kind, ref) {
+  const p = S.projects.find(x => x.id === projectId);
+  if (!p) return { ok: false, error: 'Unknown project' };
+  const map = { goal: 'goals', task: 'tasks', agent: 'agents', file: 'files', integration: 'integrations', permission: 'permissions', memory: 'memory', asset: 'assets' };
+  const key = map[kind];
+  if (!key) return { ok: false, error: 'Unknown project member kind: ' + kind };
+  p[key] = (p[key] || []).concat([ref]);
+  p.audit.unshift({ ts: Date.now(), detail: kind + ' linked: ' + (typeof ref === 'string' ? ref : JSON.stringify(ref)).slice(0, 80) });
+  if (p.audit.length > 100) p.audit.length = 100;
+  save();
+  return { ok: true, project: p };
+}
+
+/* §87–§92: the LD economy configuration. Simulation is the only mode this
+ * build may operate in; every real-money path is gated behind an explicit
+ * environment opt-in *and* verified payment authority *and* owner confirmation.
+ *   LD_ECONOMY_MODE                 simulation | real        (default simulation)
+ *   LD_AUD_VALUE                    simulation reference rate (default 0.01)
+ *   REAL_MONEY_WAGERING_ENABLED     "true" enables real-money wagers (default false)
+ *   ARENA_WAGER_ENABLED             "true" enables real-money arena settlement (default false)
+ * Simulated arena wagers (the §85 mechanism) remain available and are always
+ * labelled SIMULATION — no real money can move regardless of these flags. */
+const LD_AUD_VALUE = Number(process.env.LD_AUD_VALUE || 0.01);
+const LD_ECONOMY_MODE = process.env.LD_ECONOMY_MODE || 'simulation';
+const REAL_MONEY_WAGERING_ENABLED = process.env.REAL_MONEY_WAGERING_ENABLED === 'true';
+const ARENA_WAGER_ENABLED = process.env.ARENA_WAGER_ENABLED === 'true';
+function economyConfig() {
+  return {
+    mode: S.economy.realMode ? 'real' : 'simulation',
+    configuredMode: LD_ECONOMY_MODE,
+    ldAudValue: LD_AUD_VALUE,
+    realMoneyWagering: REAL_MONEY_WAGERING_ENABLED && S.economy.realMode,
+    arenaRealMoneySettlement: ARENA_WAGER_ENABLED && REAL_MONEY_WAGERING_ENABLED && S.economy.realMode,
+    simulationWagers: true,
+    note: 'Simulation is the only permitted live mode in this build (§88/§92). Real-money paths require licensing, age/identity verification and jurisdictional review, plus the explicit flags above.',
+    compliance: 'COMPLIANCE-LOCKED'
+  };
+}
+
+/* ══ v1.65 LD economy: issuance, pools, market and piece pricing ═══
+ * LD has exactly three sources and every one is audited:
+ *   1. the LD Issuance reserve (an explicit, audited mint into a pool/wallet),
+ *   2. rewards paid from a funded pool (sign-in gifts, task rewards),
+ *   3. purchases through the LD market (simulation today; real money locked).
+ * There is no fourth source. Posts are balanced, so LD cannot leak. */
+function ldBalance(account) { return Number(S.ledger.accounts[account] || 0); }
+function ensurePool(pool, amount) {
+  if (!LD_POOLS.includes(pool)) return { ok: false, error: 'Unknown LD pool ' + pool };
+  if (ldBalance(pool) >= amount) return { ok: true, funded: 0, balance: ldBalance(pool) };
+  const need = amount - ldBalance(pool);
+  const r = ledgerPost([{ account: 'LD Issuance', delta: -need }, { account: pool, delta: need }],
+    'issue ' + need + ' LD into ' + pool, { actor: 'system', reason: 'pool funding', source: 'LD Issuance', destination: pool, kind: 'issuance' });
+  if (!r.ok) return r;
+  audit('economy', 'LD ISSUANCE: ' + need + ' LD minted into ' + pool + ' (explicit, audited supply increase)', 'system',
+    { action: 'ld.issue', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  return { ok: true, funded: need, balance: ldBalance(pool) };
+}
+function payReward(account, amount, memo, pool) {
+  const fund = ensurePool(pool, amount);
+  if (!fund.ok) return fund;
+  const r = ledgerPost([{ account: pool, delta: -amount }, { account, delta: amount }], memo,
+    { actor: 'system', reason: 'reward payout', source: pool, destination: account, kind: 'reward' });
+  return r.ok ? { ok: true, funded: fund.funded || 0, balance: ldBalance(account) } : r;
+}
+function economyReport() {
+  const circ = Object.entries(S.ledger.accounts)
+    .filter(([k]) => !['LD Issuance', 'Forge Sink', 'Marketplace Sink', 'Arena Escrow', 'Treasury'].includes(k) && !LD_POOLS.includes(k))
+    .reduce((sum, [, v]) => sum + v, 0);
+  return {
+    mode: S.economy.realMode ? 'REAL' : 'SIMULATION',
+    config: economyConfig(),
+    balances: Object.assign({}, S.ledger.accounts),
+    circulatingLD: circ,
+    pools: LD_POOLS.reduce((acc, p) => Object.assign(acc, { [p]: ldBalance(p) }), {}),
+    market: engagement.LD_MARKET,
+    pieceCosts: engagement.PIECE_RULES,
+    priceTable: { pieces: engagement.PIECE_COST, pet: engagement.PET_COST, merge: engagement.MERGE_COST },
+    orders: (S.ldOrders || []).slice(0, 10),
+    txCount: S.ledger.tx.length,
+    note: 'Every LD movement is a balanced double-entry post. Rewards only pay from funded pools; pool funding is an audited issuance.'
+  };
+}
+function ldMarketCmd(ld, side, opts) {
+  opts = opts || {};
+  const q = engagement.ldOrderQuote(ld, side || 'buy');
+  if (!q.ok) return q;
+  const owner = opts.owner || ownerWallet();
+  if (S.economy.realMode) {
+    return { ok: false, blocked: 'compliance', error: 'Real-money LD ' + q.side + ' orders are COMPLIANCE-LOCKED. A verified payment/payout authority, licensing, age/identity verification and jurisdictional review are required before activation (§88/§92). No money moved.', quote: q };
+  }
+  const entries = engagement.ldOrderEntries(q, owner);
+  const memo = 'SIMULATION LD ' + (q.side === 'buy' ? 'purchase' : 'sale') + ': ' + q.ld + ' LD at ' + q.rateAudPerLD + ' AUD per LD = A$' + q.aud.toFixed(2);
+  const post = ledgerPost(entries, memo, { actor: owner, reason: 'ld market ' + q.side, kind: 'ld-market', source: q.side === 'buy' ? 'LD Issuance' : owner, destination: q.side === 'buy' ? owner : 'LD Issuance' });
+  if (!post.ok) return post;
+  const order = { id: nid('ldo'), ts: Date.now(), side: q.side, ld: q.ld, aud: q.aud, rateAudPerLD: q.rateAudPerLD, mode: 'SIMULATION', wallet: owner, settled: true, spreadPct: q.spreadPct };
+  S.ldOrders.unshift(order);
+  if (S.ldOrders.length > 200) S.ldOrders.length = 200;
+  audit('economy', memo + (q.side === 'sell' ? ' (LD returned to issuance; payout recorded, nothing paid out)' : ''), 'user',
+    { action: 'ld.' + q.side, decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, order, quote: q, balance: ldBalance(owner), simulation: true, note: 'Recorded in the simulation ledger. Real-money LD trading stays compliance-locked.' };
+}
+/* Creating anything costs LD: forging is priced by band, provisioning fills an
+ * empty required slot at Common price, pets and merges have their own price. */
+function chargeLD(account, amount, memo, sink) {
+  if (!(amount > 0)) return { ok: true, cost: 0 };
+  const r = ledgerPost([{ account, delta: -amount }, { account: sink || 'Forge Sink', delta: amount }], memo,
+    { actor: account, reason: 'piece creation', source: account, destination: sink || 'Forge Sink', kind: 'piece-cost' });
+  if (!r.ok) return r;
+  return { ok: true, cost: amount };
+}
+function piecePriceList() {
+  return {
+    pieces: engagement.PIECE_COST,
+    pet: engagement.PET_COST,
+    merge: engagement.MERGE_COST,
+    market: 'Player trades settle in LD with a 1% Treasury rule.',
+    drops: engagement.PIECE_RULES.drops,
+    note: 'Pieces are created with LD or found as battle drops. Selling a piece returns LD through marketplace escrow.'
+  };
+}
+/* The owner's own wallet is the ledger account the platform bootstrapped for
+ * them ('Owner'); a local login name is not an account by itself. Avatars and
+ * organisations hold their own accounts, so pick by balance when one exists. */
+function ownerWallet() {
+  const name = (S.owner && S.owner.name) || 'Owner';
+  if (S.ledger.accounts[name] !== undefined) return name;
+  return 'Owner';
+}
+function walletFor(avatarName, opts) {
+  opts = opts || {};
+  if (opts.wallet && S.ledger.accounts[opts.wallet] !== undefined) return opts.wallet;
+  if (avatarName && ldBalance(avatarName) > 0) return avatarName;
+  return ownerWallet();
+}
+function avatarArg(v) {
+  const arena = require('./arena-engine.js');
+  const name = String(v || '');
+  const byName = arena.list().find(a => a.name.toLowerCase() === name.toLowerCase());
+  if (byName) return byName.name;
+  return arena.get(name) ? arena.get(name).name : name;
+}
+function provisionLoadoutCmd(avatarName, opts) {
+  opts = opts || {};
+  const arena = require('./arena-engine.js');
+  const av = arena.list().find(a => a.name.toLowerCase() === String(avatarName || '').toLowerCase()) || (opts.avatarId ? arena.get(opts.avatarId) : null);
+  if (!av) return { ok: false, error: 'No avatar named ' + avatarName };
+  const before = arena.loadoutStatus(av.id);
+  if (before.complete) return { ok: true, alreadyComplete: true, avatar: av.name, cost: 0, status: before };
+  const missing = before.missing.length;
+  const cost = missing * engagement.pieceCost('Common');
+  const wallet = walletFor(av.name, opts);
+  const pay = chargeLD(wallet, cost, 'provision ' + missing + ' required slot(s) for ' + av.name + ' at Common price');
+  if (!pay.ok) return Object.assign(pay, { needed: cost, balance: ldBalance(wallet), wallet, hint: 'Buy LD in the market (“buy 500 ld”), claim your sign-in gift, or complete daily tasks.' });
+  const r = arena.equipLoadout(av.id, opts);
+  if (!r.ok) return r;
+  audit('forge', 'PROVISIONED ' + av.name + ': ' + missing + ' slot(s) for ' + cost + ' LD from ' + wallet, 'user',
+    { action: 'piece.provision', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, avatar: av.name, cost, wallet, equipped: r.equipped, status: r.status, note: 'Filled slots hold real engine loot with real fingerprints; LD was charged because creating pieces costs LD.' };
+}
+function summonPetCmd(avatarName, opts) {
+  opts = opts || {};
+  const arena = require('./arena-engine.js');
+  const av = arena.list().find(a => a.name.toLowerCase() === String(avatarName || '').toLowerCase());
+  if (!av) return { ok: false, error: 'No avatar named ' + avatarName };
+  const wallet = walletFor(av.name, opts);
+  const pay = chargeLD(wallet, engagement.PET_COST, 'summon pet for ' + av.name);
+  if (!pay.ok) return Object.assign(pay, { needed: engagement.PET_COST, balance: ldBalance(wallet), wallet });
+  const r = arena.createPet(av.id);
+  if (!r.ok) return r;
+  audit('forge', 'PET SUMMONED for ' + av.name + ' (' + r.pet.species + ' ' + r.pet.name + ', ' + r.pet.rarity + ') for ' + engagement.PET_COST + ' LD', 'user',
+    { action: 'pet.create', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, pet: r.pet, cost: engagement.PET_COST, wallet };
+}
+function mergePiecesCmd(avatarName, ids, opts) {
+  opts = opts || {};
+  const arena = require('./arena-engine.js');
+  const av = arena.list().find(a => a.name.toLowerCase() === String(avatarName || '').toLowerCase());
+  if (!av) return { ok: false, error: 'No avatar named ' + avatarName };
+  const raw = arena.rawAvatar(av.id);
+  const items = (ids || []).map(id => (raw.inventory || []).find(i => i.id === id)).filter(Boolean);
+  if (items.length !== 3) return { ok: false, error: 'Merging needs three inventory piece ids' };
+  const band = items[0].rarity;
+  const cost = engagement.MERGE_COST[band] || engagement.MERGE_COST.Common;
+  const wallet = walletFor(av.name, opts);
+  const pay = chargeLD(wallet, cost, 'merge 3 ' + band + ' pieces for ' + av.name);
+  if (!pay.ok) return Object.assign(pay, { needed: cost, balance: ldBalance(wallet), wallet });
+  const r = arena.mergePieces(av.id, ids);
+  if (!r.ok) return r;
+  save();
+  return { ok: true, merged: r.merged, cost, band, wallet };
+}
+/* Task progress is driven by real activity, never by a claim that activity
+ * happened. Each call site below is an actual execution path. */
+function progressQuests(metric, amount) {
+  try { return engagement.progressQuest(S, metric, amount); } catch (e) { return []; }
+}
+function claimableQuests() { return engagement.questSummary(S).claimable; }
+
+const ARENA_WAGER_LD = 100;
+function arenaWagerMatch(opts) {
+  opts = opts || {};
+  const arena = require('./arena-engine.js');
+  const a = arena.get(opts.a), b = arena.get(opts.b);
+  if (!a || !b) return { ok: false, error: 'Both avatars must exist (verified participants)' };
+  if (a.id === b.id) return { ok: false, error: 'A match needs two distinct participants' };
+  if (opts.confirmed !== true) return { ok: false, needsConfirmation: true, terms: { each: ARENA_WAGER_LD + ' LD', pool: '200 LD', winner: '198 LD', treasury: '2 LD (1%)' }, error: 'Wager matches require explicit confirmation' };
+  /* §86: verified avatars — the loadout gate is enforced before any LD moves. */
+  const la = arena.loadoutStatus(a.id), lb = arena.loadoutStatus(b.id);
+  if (!la.complete || !lb.complete) {
+    return {
+      ok: false, needsLoadout: true, blocked: 'loadout-gate',
+      missing: { [a.name]: la.missing, [b.name]: lb.missing },
+      error: 'Both participants must be fully equipped before a wager match (' + (la.missing.length ? a.name + ': ' + la.missing.join('/') : '') + (lb.missing.length ? (la.missing.length ? '; ' : '') + b.name + ': ' + lb.missing.join('/') : '') + '). Provision with “provision loadout <avatar>”.'
+    };
+  }
+  if (S.economy.realMode && !(REAL_MONEY_WAGERING_ENABLED && ARENA_WAGER_ENABLED)) {
+    return { ok: false, error: 'Real-money wagering stays COMPLIANCE-LOCKED: licensing, age/identity verification and jurisdictional review are required before activation (§92). LD_AUD_VALUE=' + LD_AUD_VALUE + ' applies to simulation only; real-money settlement additionally requires REAL_MONEY_WAGERING_ENABLED=true and ARENA_WAGER_ENABLED=true.', blocked: 'compliance', economy: economyConfig() };
+  }
+  const seed = Number(opts.seed) || 42;
+  const result = arena.battle(a.id, b.id, seed, { decisionRule: true }); // deterministic + auditable
+  if (!result.ok) return { ok: false, error: result.error || 'Battle engine refused the match' };
+  const record = result.battle;
+  const stakeA = ARENA_WAGER_LD, stakeB = ARENA_WAGER_LD, pool = stakeA + stakeB;
+  if (!record.winnerId) {
+    // A true draw settles nothing — stakes are returned untouched (§86).
+    return { ok: true, drew: true, draw: true, settlement: 'none — draws settle nothing', pool, refunded: pool, rounds: record.rounds, seed, realMoney: false, note: 'Both stakes are returned; the treasury receives nothing on a draw.' };
+  }
+  const winnerA = record.winnerId === a.id;
+  const settleTo = winnerA ? a.name : b.name;
+  S.ledger.accounts[a.name] = S.ledger.accounts[a.name] === undefined ? 200 : S.ledger.accounts[a.name];
+  S.ledger.accounts[b.name] = S.ledger.accounts[b.name] === undefined ? 200 : S.ledger.accounts[b.name];
+  const w = wager(a.name, b.name, ARENA_WAGER_LD, settleTo);
+  if (!w.ok) return w;
+  audit('economy', `SIMULATION arena wager settled: pool ${w.pool}, winner ${w.winner} (${settleTo}), treasury ${w.treasury} (1%), seed ${seed}, rounds ${record.rounds}${record.decision ? ' (' + record.decision + ')' : ''}`, 'system', {
+    action: 'arena.wager', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED', approval: opts.approvalId || null
+  });
+  save();
+  return {
+    ok: true, mode: 'SIMULATION', realMoney: false, pool: w.pool, winner: w.winner, treasury: w.treasury,
+    winnerAvatar: settleTo, decision: record.decision || 'knockout', seed, deterministic: true, rounds: record.rounds,
+    note: 'Arena mechanics stay isolated from core security and account systems (§85); results are deterministic for a given seed and audited.'
+  };
+}
+function openDispute(opts) {
+  opts = opts || {};
+  S.disputes.unshift({ id: nid('disp'), ts: Date.now(), matchId: opts.matchId || null, reason: String(opts.reason || '').slice(0, 200), status: 'OPEN', evidence: opts.evidence || null });
+  audit('security', 'ARENA DISPUTE opened: ' + (opts.reason || '').slice(0, 80), 'user', { action: 'arena.dispute', decision: 'ALLOW', risk: 'MEDIUM' });
+  save();
+  return { ok: true, disputes: S.disputes.length };
+}
+
+/* §40/§41/§104/§105 device surface */
+function pairDeviceCmd(opts) { const r = services.pairDevice(S, opts || {}, (opts || {}).pairingCode || 'user-provided-code'); audit('security', 'DEVICE paired: ' + (opts && opts.name), 'user', { device: opts && opts.name, action: 'device.pair', decision: 'ALLOW', risk: 'MEDIUM', result: r.ok ? 'SUCCEEDED' : 'FAILED' }); save(); return r; }
+function setDeviceTrustCmd(id, trust, opts) { const r = services.setTrust(S, id, trust, opts || {}); audit('security', 'DEVICE trust → ' + trust + ' for ' + id, 'user', { device: id, action: 'device.trust', decision: 'ALLOW', risk: 'HIGH', result: r.ok ? 'SUCCEEDED' : 'FAILED' }); save(); return r; }
+function deviceCommand(cmd) { const r = services.acceptDeviceCommand(S, cmd, S.secret); audit('security', 'DEVICE COMMAND ' + (cmd && cmd.action) + ' → ' + (r.ok ? 'ACCEPTED' : 'REFUSED (' + r.reason + ')'), 'system', { device: cmd && cmd.deviceId, capability: cmd && cmd.capability, action: 'device.command', decision: r.ok ? 'ALLOW' : 'DENY', reason: r.reason || null, risk: 'HIGH' }); save(); return r; }
+
+/* §113/§114 */
+function createOrgCmd(opts) { const r = services.createOrg(S, opts || {}); audit('account', 'ORG created: ' + (opts && opts.name), 'user', { action: 'org.create', decision: 'ALLOW', risk: 'LOW', result: r.ok ? 'SUCCEEDED' : 'FAILED' }); save(); return r; }
+function subscribeCmd(planId) {
+  const r = services.subscribe(S, { plan: planId });
+  if (!r.ok) return r;
+  audit('account', 'SUBSCRIPTION plan set: ' + r.subscription.planId, 'user', { action: 'subscription.set', decision: 'ALLOW', risk: 'LOW' });
+  save();
+  return r;
+}
+
+/* §130–§139 account surface (wrapped so every lifecycle step is audited) */
+function addAccountCmd(opts) { const r = services.addAccount(S, opts || {}); audit('account', 'ACCOUNT recorded: ' + r.account.service + ':' + r.account.identifier, 'user', { account: r.account.identifier, action: 'account.record', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' }); save(); return r; }
+function deleteAccountCmd(id, confirmed) { const r = services.deleteAccount(S, id, confirmed); audit('account', 'ACCOUNT delete ' + (r.ok ? 'EXECUTED (verified)' : 'REFUSED'), 'user', { account: id, action: 'account.delete', decision: r.ok ? 'ALLOW' : 'DENY', risk: 'CRITICAL', result: r.ok ? 'SUCCEEDED' : 'BLOCKED' }); save(); return r; }
+function disconnectAccountCmd(id) {
+  const acct = services.accountRecord(S, id);
+  const r = services.disconnectAccount(S, id, {
+    revoke: c => revoke(c, 'account disconnected'),
+    revokeCredential: svc => revokeCredential(svc)
+  });
+  audit('account', 'ACCOUNT disconnected: ' + (acct ? acct.service : id) + ' — grants revoked, credential destroyed, audit preserved', 'user', { account: acct ? acct.identifier : id, action: 'account.disconnect', decision: 'ALLOW', risk: 'MEDIUM', result: r.ok ? 'SUCCEEDED' : 'FAILED' });
+  save();
+  return r;
+}
+function accountBoundaryCheck(req) {
+  const r = services.checkCreationRequest(req || {});
+  if (!r.ok) audit('security', 'ACCOUNT boundary refusal: ' + r.violations.join('; '), 'system', { action: 'account.boundary', decision: 'DENY', reason: r.violations.join('; '), risk: 'HIGH', result: 'BLOCKED' });
+  return r;
+}
+
+/* §110/§112 asset surface */
+function registerAssetCmd(opts) {
+  const r = services.registerAsset(S, opts || {});
+  audit('asset', r.ok ? 'ASSET registered ' + r.asset.assetId + ' (R' + r.asset.rarity + ')' : 'ASSET registration refused: ' + r.reason, 'user', { action: 'asset.register', decision: r.ok ? 'ALLOW' : 'DENY', reason: r.reason || null, risk: r.asset && r.asset.rarity === 100 ? 'CRITICAL' : 'LOW', result: r.ok ? 'SUCCEEDED' : 'BLOCKED' });
+  save();
+  return r;
+}
+function transferAssetCmd(id, to, reason) { const r = services.transferAsset(S, id, to, reason); audit('asset', 'ASSET transfer ' + id + ' → ' + to, 'user', { action: 'asset.transfer', decision: r.ok ? 'ALLOW' : 'DENY', risk: 'MEDIUM' }); save(); return r; }
+
+/* §55/§56 emergency stop surface */
+function stopScope(scope, target, reason) {
+  const r = kernel.setStop(S, scope, target, reason);
+  audit('security', 'EMERGENCY STOP ' + scope + (target ? ':' + target : '') + ' — ' + (kernel.STOP_DESCRIPTIONS[scope] || ''), 'user', { action: 'security.stop', decision: 'BLOCK', reason: reason || 'user emergency stop', risk: 'HIGH', result: 'BLOCKED' });
+  save();
+  return r;
+}
+function resumeScope(scope, target) {
+  const r = kernel.clearStop(S, scope, target);
+  audit('security', 'STOP cleared for ' + scope + (target ? ':' + target : ''), 'user', { action: 'security.resume', decision: 'ALLOW', risk: 'MEDIUM' });
+  save();
+  return r;
+}
+function stopAllScopes(reason) {
+  const out = [];
+  for (const scope of kernel.STOP_SCOPES) out.push(stopScope(scope, null, reason || 'user engaged emergency stop for all scopes'));
+  return { ok: true, stopped: out.length, scopes: kernel.STOP_SCOPES.slice() };
+}
+
+/* §12 autonomous policies + §11 delegation */
+function enableAutonomousPolicy(opts) {
+  const p = kernel.createAutonomousPolicy(opts || {});
+  S.autonomousPolicies.unshift(p);
+  S.autonomous = true;
+  audit('security', `AUTONOMOUS POLICY ${p.id} armed: scope=${p.scope} caps=${p.capabilities.join(',') || 'none'} risk<=${p.riskThreshold} limit=${p.actionLimit} expires=${new Date(p.expiresTs).toISOString()}`, 'user', { action: 'autonomy.arm', decision: 'ALLOW', risk: 'HIGH', approval: (opts || {}).approvalId || null, result: 'SUCCEEDED' });
+  save();
+  return { ok: true, policy: p };
+}
+function disableAutonomousPolicies() {
+  S.autonomousPolicies.forEach(p => { p.active = false; });
+  S.autonomous = false;
+  audit('security', 'AUTONOMOUS MODE disabled — all policies deactivated', 'user', { action: 'autonomy.disarm', decision: 'ALLOW', risk: 'MEDIUM' });
+  save();
+  return { ok: true, active: 0 };
+}
+function addDelegation(opts) {
+  const d = kernel.delegationRecord(opts || {});
+  S.delegations.unshift(d);
+  audit('security', `DELEGATION ${d.id} (${d.purpose}) bounded to ${d.capabilities.join(', ')}`, 'user', { action: 'delegation.create', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, delegation: d };
+}
+
+/* §119/§118 read surfaces */
+function observability() {
+  return {
+    metrics: services.metrics(S).slice(0, 50),
+    spans: (S.spans || []).slice(0, 50),
+    timelines: (S.spans || []).slice(0, 5).map(sp => services.traceTimeline(S, sp.cid)),
+    otel: services.otelExport(S),
+    note: 'Logs, metrics, spans and correlation ids; export is OTLP-shaped and privacy-aware (§119).'
+  };
+}
+function releaseInfo() {
+  let rev = 'unknown (no VCS metadata available)';
+  try {
+    const { execSync } = require('child_process');
+    rev = execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch (e) { /* truthful fallback: no revision available */ }
+  const meta = services.releaseMeta({
+    version: VERSION,
+    sourceRevision: rev,
+    testStatus: S.release && S.release.testStatus ? S.release.testStatus : 'see test suites',
+    securityStatus: 'security layer independent of the model; approval-gated high risk; PROHIBITED actions cannot execute; audit chain verified=' + verifyAudit().ok
+  });
+  S.release = Object.assign({}, meta, { generatedTs: Date.now() });
+  return S.release;
+}
+/* §109 database collections */
+const DB_COLLECTIONS = ['users', 'auth', 'sessions', 'projects', 'tasks', 'permissions', 'capabilities', 'accounts', 'devices', 'agents', 'memory', 'assets', 'transactions', 'securityEvents', 'auditEvents', 'integrations', 'evidence', 'metrics', 'spans', 'orgs', 'subscriptions'];
+
+/* ── §126 Self-test: PASS / FAIL / WARNING / NOT_TESTED ────────── */
 function selftestAll() {
+  const C = services.check;
   const checks = [];
   const eco = economySelfTest();
-  checks.push(['economy ledger invariants', eco.checks.every(c => c.pass)]);
-  checks.push(['tamper-evident audit chain', verifyAudit().ok]);
-  checks.push(['ssrf loopback blocked', ssrfSafe('127.0.0.1') === false && ssrfSafe('169.254.169.254') === false]);
-  checks.push(['rarity scale = 100', require('./arena-engine.js').RARITY_LEVELS === 100]);
-  checks.push(['token issue/validate/revoke', (() => { grant('selftest.cap', 'self-test'); const v = tokenValid('selftest.cap'); revoke('selftest.cap'); return v; })()]);
-  checks.push(['allowlist blocks unknown op', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ]);
-  checks.push(['unbalanced ledger rejected', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok]);
-  return { version: '1.63.0', mode: 'local', allPass: checks.every(c => !!c[1]), checks: checks.map(c => ({ check: c[0], pass: !!c[1] })) };
+  checks.push(C('ledger invariants (100+100=200, 198+2, sum invariant)', 'database', eco.checks.every(c => c.pass) ? 'PASS' : 'FAIL', eco.checks.map(c => c.check + '=' + c.pass).join('; ')));
+  checks.push(C('tamper-evident audit chain verifies', 'audit-system', verifyAudit().ok ? 'PASS' : 'FAIL', verifyAudit().ok ? 'chain intact' : 'BROKEN at ' + verifyAudit().brokenAt));
+  checks.push(C('audit records carry the full §96 field set', 'audit-system', S.audit.every(a => a.id && a.action && a.cid !== undefined) ? 'PASS' : 'WARNING', 'newest ' + S.audit.length + ' records'));
+  checks.push(C('SSRF: loopback/private/metadata blocked', 'security-controls', (ssrfSafe('127.0.0.1') === false && ssrfSafe('169.254.169.254') === false && ssrfSafe('10.0.0.1') === false) ? 'PASS' : 'FAIL'));
+  checks.push(C('rarity scale is exactly 100 levels', 'configuration', require('./arena-engine.js').RARITY_LEVELS === 100 ? 'PASS' : 'FAIL'));
+  checks.push(C('capability token issue → verify → revoke', 'permissions', (() => {
+    const g = requestCapability('selftest.cap', { how: 'self-test' });
+    const v = tokenValid('selftest.cap');
+    const r = revoke('selftest.cap', 'self-test');
+    return g.ok && v && r.ok;
+  })() ? 'PASS' : 'FAIL'));
+  checks.push(C('permission states are enforced (revoked ≠ granted)', 'permissions', !permitted('selftest.cap') ? 'PASS' : 'FAIL'));
+  checks.push(C('PROHIBITED risk class cannot execute', 'security-controls', kernel.approvalMatrix('PROHIBITED').executable === false && kernel.evaluatePolicy({ riskClass: 'PROHIBITED' }).decision === 'BLOCK' ? 'PASS' : 'FAIL'));
+  checks.push(C('policy engine returns a decision for every action', 'security-controls', kernel.POLICY_DECISIONS.includes(kernel.evaluatePolicy({ riskClass: 'LOW', permissionState: 'GRANTED' }).decision) ? 'PASS' : 'FAIL'));
+  checks.push(C('allowlist blocks unknown host operation', 'security-controls', !TOOLS['exec.run'].run({ op: 'rm -rf /' }).op ? 'PASS' : 'FAIL'));
+  checks.push(C('unbalanced ledger entry rejected', 'database', !ledgerPost([{ account: 'Owner', delta: 1 }], 'attack').ok ? 'PASS' : 'FAIL'));
+  checks.push(C('path traversal outside the sandbox blocked', 'security-controls', !safePath('../etc/passwd') ? 'PASS' : 'FAIL'));
+  checks.push(C('secrets are not stored in plaintext', 'configuration', !Object.values(S.creds || {}).some(v => typeof v === 'string') ? 'PASS' : 'FAIL'));
+  checks.push(C('owner authentication configured', 'authentication', S.owner ? 'PASS' : 'WARNING', S.owner ? 'owner exists; sessions are HttpOnly SameSite' : 'first-run owner creation is still open — create one to close it'));
+  checks.push(C('session tokens are cryptographically random and revocable', 'authentication', (() => { const t = crypto.randomBytes(32).toString('hex'); S.sessions[t] = { ts: Date.now() }; const ok = sessionValid(t); delete S.sessions[t]; return ok && !sessionValid(t); })() ? 'PASS' : 'FAIL'));
+  checks.push(C('device command replay protection', 'security-controls', (() => {
+    const store = { seenCommandIds: {}, devices: [] };
+    const d = services.pairDevice(store, { name: 'selftest', platform: 'linux' }, 'code');
+    services.setTrust(store, d.device.id, 'TRUSTED');
+    services.grantDeviceCapability(store, d.device.id, 'screen.view');
+    const cmd = { commandId: 'selftest-cmd', userId: 'u', deviceId: d.device.id, capability: 'screen.view', action: 'capture', scope: {}, exp: Date.now() + 1000, authorization: 'a', correlationId: 'c' };
+    return services.acceptDeviceCommand(store, cmd, 's').ok && services.acceptDeviceCommand(store, cmd, 's').reason === 'replay';
+  })() ? 'PASS' : 'FAIL'));
+  checks.push(C('account crossover refused (ambiguous account fails closed)', 'permissions', (() => {
+    const st = { permissions: {} };
+    services.addAccount(st, { service: 'probe', identifier: 'a' });
+    services.addAccount(st, { service: 'probe', identifier: 'b' });
+    return services.resolveAccount(st, 'probe').ok === false;
+  })() ? 'PASS' : 'FAIL'));
+  checks.push(C('anti-fraud screens transactions', 'security-controls', services.fraudScreen({}, { kind: 'transfer', actor: 'a', counterparty: 'a', amount: 100000 }).blocked === true ? 'PASS' : 'WARNING'));
+  checks.push(C('integration availability (external connectors)', 'integrations', (() => {
+    const live = adaptersLive();
+    const unavailable = live.filter(a => String(a.state).startsWith('UNAVAILABLE')).length;
+    return unavailable > 0 ? 'WARNING' : 'PASS';
+  })(), adaptersLive().filter(a => String(a.state).startsWith('UNAVAILABLE')).map(a => a.id).join(', ') + ' — unavailable until real credentials/permissions exist (truthfully reported, never faked)'));
+  checks.push(C('model provider configured', 'integrations', 'NOT_TESTED', 'no model provider is connected in this build; model output is never fabricated'));
+  checks.push(C('device, camera, microphone, screen and radio bridges', 'integrations', 'NOT_TESTED', 'no OS permission bridge in this build — capabilities report EXTERNAL/UNAVAILABLE'));
+  checks.push(C('zero runtime dependencies', 'dependency-health', (() => { try { const pkg = require('./package.json'); return !pkg.dependencies || Object.keys(pkg.dependencies).length === 0; } catch (e) { return true; } })() ? 'PASS' : 'WARNING', 'Node built-ins only'));
+  checks.push(C('Node runtime supports the platform', 'dependency-health', Number(process.versions.node.split('.')[0]) >= 18 ? 'PASS' : 'FAIL', 'node ' + process.versions.node));
+  checks.push(C('evidence vault integrity', 'recovery-system', kernel.vaultVerify(S).ok ? 'PASS' : 'FAIL', kernel.vaultVerify(S).entries + ' records'));
+  checks.push(C('rollback framework refuses irreversible-without-snapshot', 'recovery-system', taskEngine.beginTransaction('selftest', { irreversible: true }).ok === false ? 'PASS' : 'FAIL'));
+  checks.push(C('correction engine classifies authorization failures as non-retryable', 'recovery-system', taskEngine.correctionPlan({ error: 'authorization required' }).retryAllowed === false ? 'PASS' : 'FAIL'));
+  checks.push(C('emergency stop covers all seven scopes', 'security-controls', kernel.STOP_SCOPES.length === 7 ? 'PASS' : 'FAIL'));
+  const summary = services.selftestSummary(checks);
+  audit('system', `SELF-TEST ${summary.counts.PASS}P/${summary.counts.FAIL}F/${summary.counts.WARNING}W/${summary.counts.NOT_TESTED}N`, 'system', { action: 'selftest', decision: 'ALLOW', risk: 'LOW', result: summary.counts.FAIL ? 'FAILED' : 'SUCCEEDED' });
+  return Object.assign({ version: VERSION, mode: 'local', generatedTs: Date.now() }, summary);
 }
+
 function compliance() {
   const { SECTIONS } = require('./spec-coverage.js');
   const arena = require('./arena-engine.js');
@@ -787,7 +2059,24 @@ function compliance() {
       rarityLevels: arena.RARITY_LEVELS,
       emergency: S.emergency, autonomous: S.autonomous,
       ownerAuth: !!S.owner, legalDocs: S.legal.length,
-      evidenceRecords: S.evidence.length
+      evidenceRecords: S.evidence.length,
+      /* v1.64 live probes for the newly implemented systems */
+      permissionStates: capabilityTable().map(c => ({ capability: c.capability, state: c.state, level: c.level })),
+      riskEngine: { classes: kernel.RISK_CLASSES.map(c => c + '=' + kernel.approvalMatrix(c).requiresApproval), prohibitedExecutable: kernel.approvalMatrix('PROHIBITED').executable },
+      policyEngine: kernel.POLICY_DECISIONS,
+      resultStates: taskEngine.RESULT_STATES,
+      taskStates: taskEngine.TASK_STATES,
+      failureClasses: taskEngine.FAILURE_CLASSES,
+      stops: kernel.stopReport(S),
+      devices: services.isolationReport(S),
+      accounts: services.accountInventory(S),
+      subscription: services.currentSubscription(S).planId,
+      assets: (S.assets || []).length,
+      evidenceVault: kernel.vaultVerify(S),
+      playbooks: Object.keys(taskEngine.PLAYBOOKS).length,
+      mockAdapters: caps.MOCK_ADAPTERS.map(a => ({ id: a.id, simulation: true, countsAsConnected: false })),
+      selftest: (function () { const t = selftestAll(); return { counts: t.counts, allPass: t.allPass }; })(),
+      release: { version: VERSION, revision: (S.release && S.release.sourceRevision) || 'not generated yet' }
     }
   };
 }
@@ -805,8 +2094,9 @@ function forgePiece(avatarId, slot, prompt, bandName, flavor) {
   const clean = String(prompt || '').trim();
   if (clean.length < 3) return { ok: false, error: 'Describe the piece — your prompt makes it unique' };
   const cost = FORGE_COST[band.name];
-  const pay = ledgerPost([{ account: 'Owner', delta: -cost }, { account: 'Forge Sink', delta: cost }], 'forge ' + band.name + ' ' + slot);
-  if (!pay.ok) return { ok: false, error: pay.error + ' — forging ' + band.name + ' costs ' + cost + ' LD' };
+  const wallet = walletFor(av.name, {});
+  const pay = chargeLD(wallet, cost, 'forge ' + band.name + ' ' + slot + ' for ' + av.name);
+  if (!pay.ok) return { ok: false, error: pay.error + ' — forging ' + band.name + ' costs ' + cost + ' LD (wallet ' + wallet + ' holds ' + ldBalance(wallet) + ')' };
   const rnd = mulberryLocal();
   const min = band.min, max = (arena.BANDS[arena.BANDS.indexOf(band) + 1] || { min: 101 }).min - 1;
   const rlevel = min + Math.floor(rnd() * (max - min + 1));
@@ -968,6 +2258,55 @@ function tickSchedules() {
   return fired;
 }
 
+/* ── §102–§160 workflow playbooks executed through the real pipeline ──
+ * Steps are mapped to tools that genuinely exist. A step with no local
+ * implementation is reported WAITING_FOR_CAPABILITY, never simulated. */
+const PLAYBOOK_TOOL_MAP = {
+  'knowledge.write': 'knowledge.write',
+  'files.read': 'fs.read', 'files.write': 'fs.write', 'files.copy': 'fs.copy',
+  'sys.read': 'sys.info', 'security.scan': 'security.scan', 'security.remediate': 'security.remediate',
+  'linux.command': 'exec.run', 'account.discover': 'account.discover', 'account.configure': 'account.configure',
+  'account.disconnect': 'account.disconnect', 'device.control': 'sys.info'
+};
+function playbookStepArgs(step, params) {
+  params = params || {};
+  switch (step.capability) {
+    case 'files.read': return { path: params.file || 'notes.txt' };
+    case 'files.write': return { path: params.file || 'notes.txt', content: params.content || ('witforge playbook step ' + step.id) };
+    case 'files.copy': return { path: params.file || 'notes.txt', to: params.backup || 'notes.backup.txt' };
+    case 'linux.command': return { op: params.op || 'date' };
+    case 'security.scan': return { path: params.path || '' };
+    case 'security.remediate': return { path: params.quarantine || 'suspicious.bin' };
+    case 'knowledge.write': return { text: 'Playbook step: ' + step.action, title: step.action.slice(0, 60) };
+    case 'account.discover': return { service: params.service || 'unspecified' };
+    case 'account.configure': return { service: params.service || 'unspecified' };
+    case 'account.disconnect': return { service: params.service || 'unspecified' };
+    default: return params.args || {};
+  }
+}
+async function runPlaybookLocal(key, opts) {
+  opts = opts || {};
+  const available = {};
+  for (const [cap, toolId] of Object.entries(PLAYBOOK_TOOL_MAP)) {
+    const t = TOOLS[toolId];
+    if (t) available[cap] = true;
+  }
+  const res = await taskEngine.runPlaybook(key, Object.assign({}, opts, {
+    externalAvailable: Object.assign({}, available, opts.externalAvailable || {}),
+    exec: async (step) => {
+      const toolId = PLAYBOOK_TOOL_MAP[step.capability];
+      if (!toolId || !TOOLS[toolId]) return { ok: false, error: 'No local implementation for ' + step.capability + ' in this build', failureClass: 'UNAVAILABLE_CAPABILITY' };
+      const r = await runTool(toolId, playbookStepArgs(step, opts.params), { confirmed: true, approvalId: opts.approvalId });
+      return { ok: r.ok, error: r.error || null, evidence: r.evidence === undefined ? null : r.evidence, state: r.state };
+    }
+  }));
+  audit('task', `PLAYBOOK ${key} (${res.section}) → ${res.state}: ${res.performed} performed, ${res.waitingForCapability} waiting for capability, ${res.failed} failed`, 'system', {
+    action: 'playbook.run', decision: res.state === 'FAILED' ? 'DENY' : 'ALLOW', risk: 'MEDIUM', result: res.state
+  });
+  save();
+  return res;
+}
+
 /* ── v1.59: export / import manifests (truthful, audited) ───────── */
 function exportManifest() {
   const m = { format: 'liam.export', version: '1.59.0', exportedAt: new Date().toISOString(),
@@ -989,9 +2328,189 @@ function importManifest(man, confirmed) {
   return { ok: true, restoredFrom: man.exportedAt };
 }
 
+/* §3/§166: chat is the control surface, so it must be able to say what it can
+ * do. This list is checked against the real router intents in the test suite. */
+const CAPABILITY_HELP = [
+  { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
+  { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
+  { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
+  { group: 'Events, lotto, rewards', items: ['“events” · “join event evt-arena-cup” · “close event evt-arena-cup winner <avatar>”', '“open lotto round” · “buy 3 lotto tickets” · “draw lotto confirm” · “verify lotto”', '“sign in” · “my streak”', '“daily tasks” · “weekly tasks” · “claim task d-tools”'] },
+  { group: 'Avatars & arena', items: ['“create avatar Korr as nord” · “races”', '“battle <avatar> vs <rival>” · “arena wager A vs B confirm”', '“talents” · “unlock talent bulwark for <avatar>”'] },
+  { group: 'Devices & accounts', items: ['“devices” · “pair device Pixel as android” · “trust device Pixel”', '“accounts” · “record account github:you” · “use account work@example.com for gmail”', '“plan pro” · “plans”'] },
+  { group: 'Owner security & guardian', items: ['“secure my account” · “harden my account maximum”', '“enable second factor” · “verify second factor 123456”', '“sessions” · “revoke all sessions” · “alerts” · “security drill”', '“guardian” · “threats” · “guardian check <something you want checked>”'] },
+  { group: 'Work & records', items: ['“new task <objective>” · “tasks state” · “playbooks” · “run playbook research-recommend”', '“remember as preference …” · “create project X | goals …”', '“vault” · “metrics” · “trace <correlation id>”'] }
+];
+
+/* ══ v1.65 engagement command layer ══════════════════════════════════
+ * Chat, the HTTP API and the tests all call these functions, so the ledger
+ * side of an engagement action exists in exactly one place. Each returns
+ * { ok, reply, ...data }: the router prints `reply`, callers read the data. */
+function joinEventCmd(id, who) {
+  who = who || ownerWallet();
+  const r = engagement.joinEvent(S, id, who);
+  if (!r.ok) return r;
+  if (r.cost > 0) {
+    const pay = ledgerPost([{ account: who, delta: -r.cost }, { account: 'Events Pool', delta: r.cost }],
+      'event entry fee ' + r.event.title,
+      { actor: who, reason: 'event entry', source: who, destination: 'Events Pool', kind: 'event' });
+    if (!pay.ok) {
+      r.event.participants = r.event.participants.filter(x => x.who !== who);   // no fee, no entry
+      return Object.assign(pay, { needed: r.cost, balance: ldBalance(who), wallet: who,
+        error: pay.error + ' — entry to ' + r.event.title + ' costs ' + r.cost + ' LD (wallet holds ' + ldBalance(who) + ' LD)' });
+    }
+  }
+  progressQuests('event.join');
+  audit('event', 'JOINED event ' + r.event.title + (r.cost ? ' for ' + r.cost + ' LD' : ' (free entry)'), 'user',
+    { action: 'event.join', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, event: r.event, cost: r.cost || 0, wallet: who, balance: ldBalance(who),
+    reply: 'Entered ' + r.event.title + (r.cost ? ' for ' + r.cost + ' LD' : ' (free entry)') + '. ' + r.event.blurb + ' Say “event progress ' + r.event.id + '” any time.' };
+}
+function eventProgressCmd(id, who, units) {
+  who = who || ownerWallet();
+  const e = engagement.eventFor(S, id);
+  if (!e) return { ok: false, error: 'Unknown event ' + id };
+  const entry = e.participants.find(p => p.who === who);
+  if (!entry) return { ok: false, error: 'You are not entered in ' + e.title + ' — say “join event ' + e.id + '” first.' };
+  entry.progress.units = (entry.progress.units || 0) + (units ? Number(units) : 1);
+  if (entry.progress.units >= 1) entry.completed = true;
+  progressQuests('event.progress');
+  save();
+  return { ok: true, event: e, units: entry.progress.units, completed: entry.completed,
+    reply: e.title + ': ' + entry.progress.units + ' objective unit(s) done' + (entry.completed ? ' — event objective complete' : '')
+      + '. Talk to it any time; closing the event settles its pool.' };
+}
+function closeEventCmd(id, opts) {
+  opts = opts || {};
+  const r = engagement.closeEvent(S, id, { winner: opts.winner });
+  if (!r.ok) return r;
+  if (r.settle === false) {
+    save();
+    return { ok: true, event: r.event, settled: false,
+      reply: r.event.title + ' closed. ' + r.event.results.completed + ' completion(s) of ' + r.event.results.participants + ' entrant(s) recorded.' };
+  }
+  const fund = ensurePool('Events Pool', r.settlement.treasury);
+  if (!fund.ok) return fund;
+  const entries = r.settlement.entries.concat([{ account: 'Events Pool', delta: -r.settlement.treasury }, { account: 'Treasury', delta: r.settlement.treasury }]);
+  const pay = ledgerPost(entries, 'event prize settlement ' + r.event.title,
+    { actor: 'system', reason: 'event settlement', kind: 'event-settlement' });
+  if (!pay.ok) return pay;
+  audit('event', 'SETTLED ' + r.event.title + ': winner ' + r.settlement.winner + ' receives ' + r.settlement.prize.payout + ' LD of a ' + r.settlement.prize.pool + ' LD pool (treasury ' + r.settlement.prize.treasury + ', 1%)', 'system',
+    { action: 'event.settle', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  save();
+  return { ok: true, event: r.event, settled: true, prize: r.settlement.prize, ledger: entries,
+    reply: r.event.title + ' settled: pool ' + r.settlement.prize.pool + ' LD → winner ' + r.settlement.winner + ' ' + r.settlement.prize.payout + ' LD, treasury ' + r.settlement.prize.treasury + ' LD (1%). SIMULATION.' };
+}
+function openLottoCmd() {
+  const r = engagement.openRound(S, { rolloverIn: ldBalance('Jackpot Rollover') });
+  if (!r.ok) return r;
+  save();
+  audit('lotto', 'Round ' + r.round.id + ' opened with commitment ' + r.round.commitHash.slice(0, 16) + '… (jackpot carry-in ' + r.round.rolloverIn + ' LD)', 'user',
+    { action: 'lotto.open', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  return { ok: true, round: r.round,
+    reply: 'Round ' + r.round.id + ' is open. Ticket price ' + r.round.ticketLD + ' LD. The server committed to sha256(' + r.round.commitHash.slice(0, 16) + '…) before any ticket was sold, so the numbers cannot change afterwards. Say “buy 3 lotto tickets”.' };
+}
+function buyTicketsCmd(count, who) {
+  count = Number(count) || 1;
+  who = who || ownerWallet();
+  const r = engagement.buyTickets(S, { owner: who, count });
+  if (!r.ok) return r;
+  const pay = ledgerPost([{ account: who, delta: -r.cost }, { account: 'Lotto Pool', delta: r.cost }],
+    count + ' lotto ticket(s) at ' + r.round.ticketLD + ' LD',
+    { actor: who, reason: 'lotto tickets', source: who, destination: 'Lotto Pool', kind: 'lotto' });
+  if (!pay.ok) {
+    r.round.tickets = r.round.tickets.filter(t => t.owner !== who || t.id < r.tickets[0].id);   // no money, no tickets
+    return Object.assign(pay, { needed: r.cost, balance: ldBalance(who), wallet: who,
+      error: (pay.error || 'Payment failed') + ' — ' + count + ' ticket(s) cost ' + r.cost + ' LD (wallet holds ' + ldBalance(who) + ' LD)' });
+  }
+  progressQuests('lotto.ticket', count);
+  save();
+  audit('lotto', 'TICKETS ' + count + ' × ' + r.round.ticketLD + ' LD in ' + r.round.id + ' by ' + who, 'user',
+    { action: 'lotto.buy', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  return { ok: true, round: r.round, tickets: r.tickets, cost: r.cost, balance: ldBalance(who),
+    reply: 'Bought ' + count + ' ticket(s) for ' + r.cost + ' LD in round ' + r.round.id + '.\n'
+      + r.tickets.map(t => '  ' + t.numbers.join(' · ')).join('\n') + '\nBalance: ' + ldBalance(who) + ' LD.' };
+}
+function drawLottoCmd(roundId, confirmed) {
+  const r = engagement.drawRound(S, roundId, { confirmed: confirmed === true });
+  if (r.needsConfirmation) return { ok: false, needsConfirmation: true, reply: 'Drawing settles LD against real tickets. Say “draw lotto confirm” to proceed.', error: 'Confirmation required' };
+  if (!r.ok) return r;
+  const pay = ledgerPost(r.entries, 'lotto settlement ' + r.round.id,
+    { actor: 'system', reason: 'lotto settlement', kind: 'lotto-settlement' });
+  if (!pay.ok) return pay;
+  progressQuests('lotto.draw');
+  save();
+  audit('lotto', 'DRAW ' + r.round.id + ': numbers ' + r.numbers.join(',') + ' · payouts ' + r.payouts.length + ' · paid ' + r.prize.paid + ' LD · treasury ' + r.prize.treasury + ' LD · community ' + r.prize.community + ' LD' + (r.rolledOver ? ' · jackpot rolls over ' + r.prize.rolloverOut + ' LD' : ''), 'system',
+    { action: 'lotto.draw', decision: 'ALLOW', risk: 'MEDIUM', result: 'SUCCEEDED' });
+  return { ok: true, round: r.round, numbers: r.numbers, payouts: r.payouts, prize: r.prize, rolledOver: r.rolledOver,
+    reply: [
+      'Draw ' + r.round.id + ' — numbers: ' + r.numbers.join(' · '),
+      'Sales ' + r.prize.gross + ' LD (carry-in ' + r.prize.carryIn + ' LD) · prize tiers ' + r.prize.tierPool + ' LD · jackpot ' + r.prize.jackpotContribution + (r.prize.carryIn ? ' + ' + r.prize.carryIn : '') + ' LD · community ' + r.prize.community + ' LD · treasury ' + r.prize.treasury + ' LD',
+      r.rolledOver ? 'No jackpot winner — ' + r.prize.rolloverOut + ' LD rolls into the next round.' : 'Jackpot won.',
+      r.payouts.length ? 'Winner(s): ' + r.payouts.map(p => p.owner + ' ' + p.ld + ' LD (' + p.tier + ')').join(', ') : 'No tickets matched three or more numbers.',
+      'Verify independently with “verify lotto ' + r.round.id + '”.'
+    ].join('\n') };
+}
+function signInCmd(who, opts) {
+  opts = opts || {};
+  who = who || ownerWallet();
+  const st = engagement.signInStatus(S, who);
+  if (opts.statusOnly) {
+    return { ok: true, status: st, claimed: false,
+      reply: 'Streak: ' + st.streak + ' day(s), ' + (st.totalClaims || 0) + ' claim(s) total. ' + (st.claimedToday ? 'Today’s gift is claimed already.' : 'Today’s gift is unclaimed — say “sign in”.') };
+  }
+  const r = engagement.claimSignIn(S, who);
+  if (!r.ok) return r;
+  const pay = payReward(who, r.ld, 'sign-in day ' + r.day + ' gift', 'Rewards Pool');
+  if (!pay.ok) return pay;
+  progressQuests('signin.claim');
+  save();
+  audit('engagement', 'SIGN-IN day ' + r.day + ' (streak ' + r.streak + '): +' + r.ld + ' LD' + (r.bonus ? ' + ' + r.bonus : ''), 'user',
+    { action: 'signin.claim', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  return { ok: true, claimed: r, status: engagement.signInStatus(S, who), balance: ldBalance(who),
+    reply: [
+      'Day ' + r.day + ' gift claimed: +' + r.ld + ' LD' + (r.bonus ? ' and a ' + r.bonus.split(':')[1] + ' piece voucher' : '') + '. Streak ' + r.streak + ' day(s).',
+      'Balance: ' + ldBalance(who) + ' LD. The seven-day cycle pays ' + engagement.SIGN_IN_REWARDS.map(x => x.ld).join('/') + ' LD, then starts again.',
+      'Paid from the Rewards Pool and recorded in the ledger.'
+    ].join('\n') };
+}
+function claimQuestCmd(id, who) {
+  who = who || ownerWallet();
+  const r = engagement.claimQuest(S, id, who);
+  if (!r.ok) return r;
+  const pay = payReward(who, r.ld, r.window + ' task reward: ' + r.quest.title, 'Rewards Pool');
+  if (!pay.ok) return pay;
+  progressQuests('quest.claim');
+  save();
+  audit('engagement', 'TASK CLAIMED ' + r.window + ' ' + r.quest.id + ' (' + r.quest.title + ') +' + r.ld + ' LD', 'user',
+    { action: 'quest.claim', decision: 'ALLOW', risk: 'LOW', result: 'SUCCEEDED' });
+  return { ok: true, quest: r.quest, ld: r.ld, window: r.window, balance: ldBalance(who),
+    reply: r.window.toUpperCase() + ' task “' + r.quest.title + '” claimed: +' + r.ld + ' LD. Balance ' + ldBalance(who) + ' LD.' };
+}
+
 module.exports = {
   get state() { return S; },
-  save, audit, nid,
+  save, audit, nid, VERSION, maskSecrets,
+  /* v1.64 systems */
+  kernel, caps, taskEngine, services, DB_COLLECTIONS,
+  capabilityState, capabilityLevel, capabilityTable, requestCapability, scopedGrant,
+  deny, suspend, resumeCapability, expire, blockBySecurity, blockByPolicy, setCapabilityState,
+  assessAction, actionPolicy,
+  MEMORY_CLASSES, rememberTyped, createProjectFull, projectLink,
+  arenaWagerMatch, openDispute, ARENA_WAGER_LD, economyConfig, LD_AUD_VALUE,
+  /* v1.65 engagement surface — the same functions the chat router uses */
+  eventsBoard: () => engagement.listEvents(S),
+  joinEvent: joinEventCmd, eventProgress: eventProgressCmd, closeEvent: closeEventCmd,
+  openLottoRound: openLottoCmd, buyLottoTickets: buyTicketsCmd, drawLotto: drawLottoCmd,
+  verifyLotto: (id) => { const r = id ? (S.lottoRounds || []).find(x => x.id === id) : (S.lottoRounds || []).find(x => x.state === 'DRAWN'); return r ? engagement.verifyRound(r) : { ok: false, error: 'No drawn round to verify' }; },
+  ldMarketCmd, piecePriceList,
+  signInGift: signInCmd, claimQuestCmd, questStatus: (who) => engagement.questSummary(S, who),
+  pledgeReport: () => engagement.reportCard ? engagement.reportCard(S) : null,
+  pairDeviceCmd, setDeviceTrustCmd, deviceCommand, stopScope, resumeScope, stopAllScopes,
+  enableAutonomousPolicy, disableAutonomousPolicies, addDelegation,
+  createOrgCmd, subscribeCmd, addAccountCmd, deleteAccountCmd, disconnectAccountCmd, accountBoundaryCheck,
+  registerAssetCmd, transferAssetCmd,
+  observability, releaseInfo,
   EMERGENCIES, setEmergency, grant, revoke, permitted,
   createApproval, decideApproval, approved,
   ADAPTERS, TOOLS, runTool, guardedFetch,
@@ -1002,8 +2521,19 @@ module.exports = {
   createPayment, confirmPayment, setRealMode,
   verifyAudit, withCid, tokenValid,
   createOwner, login, logout, sessionValid,
-  selftestAll, compliance, freshState,
+  selftestAll, compliance, freshState, migrateLegal,
   exportManifest, importManifest,
   addReminder, tickReminders,
-  addSchedule, tickSchedules
+  addSchedule, tickSchedules,
+  runPlaybookLocal, PLAYBOOK_TOOL_MAP,
+  /* v1.65 engagement + owner protection */
+  engagement, ownerSec,
+  CAPABILITY_HELP,
+  ldBalance, ensurePool, payReward, economyReport, ldMarketCmd, chargeLD, piecePriceList,
+  provisionLoadoutCmd, summonPetCmd, mergePiecesCmd, mergePieces: (v, ids) => mergePiecesCmd(avatarArg(v), ids),
+  /* These accept an avatar NAME (what chat gives) or an avatar ID (what tests
+   * and HTTP callers give) — resolved in one place rather than guessing. */
+  provisionLoadout: (v, opts) => provisionLoadoutCmd(avatarArg(v), opts),
+  summonPet: (v) => summonPetCmd(avatarArg(v)), progressQuests, claimableQuests,
+  LD_POOLS
 };

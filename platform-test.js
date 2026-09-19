@@ -134,7 +134,12 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   const comp = P.compliance();
   ok(comp.total === 168, 'spec registry has 168 sections');
   const stt = P.selftestAll();
-  ok(stt.checks.every(c => c.pass), 'aggregated self-test passes: ' + stt.checks.map(c => c.check + '=' + c.pass).join(','));
+  /* §126: four truthful states — no FAIL is required; WARNING/NOT_TESTED are
+   * honest statements about integrations that genuinely are not connected. */
+  ok(Object.keys(stt.counts).sort().join() === 'FAIL,NOT_TESTED,PASS,WARNING', 'self-test reports PASS/FAIL/WARNING/NOT_TESTED: ' + JSON.stringify(stt.counts));
+  ok(stt.counts.FAIL === 0, 'aggregated self-test has no failures: ' + stt.checks.filter(c => c.result === 'FAIL').map(c => c.check).join(','));
+  ok(stt.checks.length >= 20, 'self-test covers the mandated categories (' + stt.checks.length + ' checks)');
+  ok(stt.checks.every(c => !c.pass || c.result === 'PASS'), 'no untested control is presented as passing');
 
   /* pets + merge */
   delete require.cache[require.resolve('./arena-engine.js')];
