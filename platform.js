@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.67.0';
+const VERSION = '1.68.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -744,6 +744,13 @@ const TOOLS = {
       if (!r.ok) return { error: 'Verify FAILED against ' + p.id + ' (real call): ' + r.error, truthful: true };
       return { provider: r.provider, model: r.model, latencyMs: r.latencyMs, sample: r.content.slice(0, 40), verified: true };
     } },
+  'llm.ensemble': { cap: 'llm.ensemble', risk: 'medium', verification: 'one labelled answer per configured provider; failures reported, never swallowed', run: async a => {
+      const ids = llm.PROVIDER_IDS.filter(id => { const pr = llm.providerById(id); return !pr.requiresKey || decryptToken(id); });
+      if (!ids.length) return { error: 'No AI provider is configured yet — “ask all” fans one question out to every connected provider. Free keys: ' + llm.PROVIDERS.filter(x => x.requiresKey).map(x => x.id).join(', ') + '; ollama needs no key.', truthful: true };
+      const r = await llm.ensemble(ids, a, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: id => (llm.providerById(id).requiresKey ? decryptToken(id) : null) });
+      if (S.llm) { S.llm.calls = (S.llm.calls || 0) + r.answers.length; save(); }
+      return { providersAsked: ids, answers: r.answers.map(x => ({ provider: x.provider, model: x.model, latencyMs: x.latencyMs, reply: x.content })), failures: r.failures };
+    } },
   /* ── v1.64: §124 mock adapter executed through the real pipeline ── */
   'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: (a, o) => {
       const ad = caps.MOCK_ADAPTERS.find(x => x.behaviour === (a.behaviour || 'succeed')) || caps.MOCK_ADAPTERS[0];
@@ -910,7 +917,8 @@ const TOOL_SCOPES = {
   'stripe.verify': ['network', 'integration'], 'account.discover': ['account', 'network'],
   'account.configure': ['account'], 'account.disconnect': ['account'],
   'knowledge.write': ['task'], 'mock.echo': ['task'], 'economy.selftest': ['task'],
-  'llm.status': ['task'], 'llm.chat': ['network', 'integration'], 'llm.verify': ['network', 'integration']
+  'llm.status': ['task'], 'llm.chat': ['network', 'integration'], 'llm.verify': ['network', 'integration'],
+  'llm.ensemble': ['network', 'integration']
 };
 function toolScopes(toolId) {
   const id = String(toolId || '');
@@ -1652,6 +1660,13 @@ async function command(text) {
   /* v1.67: the AI brain — explicit asks, provider selection, verification.
    * Matched late so rule-based intents keep priority: the router is the
    * audited surface; the LLM advises and answers, it does not execute. */
+  if ((m = q.match(/^ask all\s+([\s\S]+)$/i)) || (m = q.match(/^ensemble[:\s]+([\s\S]+)$/i))) {
+    const r = await runTool('llm.ensemble', { prompt: m[1] }, {});
+    if (!r.ok) return R(r.error);
+    const parts = r.result.answers.map(x => '🤖 [' + x.provider + ' · ' + x.model + ' · ' + x.latencyMs + 'ms]\n' + x.reply);
+    if (r.result.failures.length) parts.push('⚠️ failed: ' + r.result.failures.map(f => f.provider + ' (' + f.error + ')').join(', '));
+    return R('Ensemble — the same question to every connected provider (' + r.result.providersAsked.join(', ') + '):\n\n' + parts.join('\n\n'));
+  }
   if ((m = q.match(/^(?:ask|ai)\s+([\s\S]+)$/i))) {
     const r = await runTool('llm.chat', { prompt: m[1] }, {});
     return r.ok ? R('🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + r.result.reply) : R(r.error || 'The AI provider could not answer.');
@@ -2518,7 +2533,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },

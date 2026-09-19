@@ -161,6 +161,15 @@ async function chat(providerId, args, deps) {
   const req = dryRun(providerId, args);
   if (req.error) return { ok: false, error: req.error };
   const p = providerById(req.provider);
+  /* v1.68: local models — if the requested model isn't installed, answer
+   * with the first one that is (named in the response), never a fake. */
+  if (p.shape === 'ollama' && deps.localFetch) {
+    const installed = await ollamaModels({ localFetch: deps.localFetch });
+    if (installed && installed.length) {
+      const want = String(req.body.model);
+      if (!installed.includes(want) && !installed.includes(want + ':latest')) req.body.model = installed[0];
+    }
+  }
   let res;
   if (p.shape === 'ollama') {
     if (!localFetch) return { ok: false, error: 'Local fetch unavailable in this runtime' };
@@ -193,4 +202,20 @@ async function ollamaModels(deps) {
   try { const j = JSON.parse(res.text); return (j.models || []).map(m => m.name); } catch (e) { return null; }
 }
 
-module.exports = { PROVIDERS, PROVIDER_IDS, DEFAULT_ORDER, SYSTEM_PROMPT, providerById, dryRun, parseReply, validateLocalUrl, chat, ollamaModels };
+/* v1.68: fan one question out to several providers at once ("ask all").
+ * deps.apiKey may be a function of provider id so each cloud provider is
+ * keyed with its own credential. One provider failing never sinks the
+ * rest — answers and failures come back separately, both labelled. */
+async function ensemble(providerIds, args, deps) {
+  const ids = (providerIds || []).filter(id => providerById(id));
+  const results = await Promise.allSettled(ids.map(id => chat(id, args, deps)));
+  const answers = [], failures = [];
+  results.forEach((r, i) => {
+    const id = ids[i];
+    if (r.status === 'fulfilled' && r.value.ok) answers.push(r.value);
+    else failures.push({ provider: id, error: String(r.status === 'fulfilled' ? (r.value.error || 'failed') : ((r.value && r.value.message) || 'threw')).slice(0, 200) });
+  });
+  return { answers, failures };
+}
+
+module.exports = { PROVIDERS, PROVIDER_IDS, DEFAULT_ORDER, SYSTEM_PROMPT, providerById, dryRun, parseReply, validateLocalUrl, chat, ollamaModels, ensemble };

@@ -1,6 +1,6 @@
 # WitForge — Installation & Operations Validation
 
-**Applies to:** WitForge `1.67.0` (engagement + owner-protection build).
+**Applies to:** WitForge `1.68.0` (engagement + owner-protection build).
 **Scope:** this document is the §128 installation-validation record. Every command
 below was executed against this tree before it was written. Commands that were not
 run are marked as such — nothing here is claimed on faith.

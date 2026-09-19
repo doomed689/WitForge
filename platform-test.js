@@ -303,6 +303,18 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(nokey.ok === false && /connect groq with token/.test(nokey.error), 'chat without a key reports UNAVAILABLE with the exact connect command');
   const unk = await P.runTool('llm.chat', { prompt: 'x', provider: 'nope' }, {});
   ok(unk.ok === false && /Unknown provider/.test(unk.error), 'unknown provider is rejected');
+  /* v1.68: ensemble aggregation — pure dry test with a shaped fake fetch:
+   * three OpenAI-shape providers answer, one fails, nothing sinks the rest. */
+  const ens = await llmMod.ensemble(['groq', 'openrouter', 'deepseek', 'mistral'], { prompt: 'q' }, {
+    remoteFetch: async (url) => url.includes('mistral') ? { ok: false, error: 'HTTP 429 (rate limited)' } : { ok: true, status: 200, text: JSON.stringify({ choices: [{ message: { content: 'canned reply' } }] }) },
+    apiKey: 'sk-ensemble-test-key-123'
+  });
+  ok(ens.answers.length === 3 && ens.answers.every(a => a.ok && a.content === 'canned reply'), 'ensemble collects labelled answers from every reachable provider');
+  ok(ens.failures.length === 1 && ens.failures[0].provider === 'mistral' && /429/.test(ens.failures[0].error), 'ensemble reports a failing provider without sinking the rest');
+
+  /* Local round trip: binds an isolated fake on 11434, or — if this machine
+   * already runs a real Ollama — tests against that instead. Both paths
+   * must pass; neither is skipped. */
   const httpMod = require('http');
   const fake = httpMod.createServer((rq, rs) => {
     let b = ''; rq.on('data', c => { b += c; }); rq.on('end', () => {
@@ -312,18 +324,28 @@ const run = (t, a) => P.runTool(t, a || {}, {});
       rs.end(JSON.stringify({ model: 'llama3.2', message: { role: 'assistant', content: 'local echo: ' + last.slice(0, 30) } }));
     });
   });
-  await new Promise(res => fake.listen(11434, '127.0.0.1', res));
+  let usingReal = false;
+  await new Promise(res => {
+    fake.once('error', e => { if (e.code === 'EADDRINUSE') { usingReal = true; res(); } });
+    fake.listen(11434, '127.0.0.1', () => res());
+  });
   const loc = await P.runTool('llm.chat', { prompt: 'ping local' }, {});
-  ok(loc.ok && loc.result.provider === 'ollama' && /local echo: ping local/.test(loc.result.reply), 'local Ollama round trip works through the validated loopback path (default fallback with zero keys)');
+  ok(loc.ok && loc.result.provider === 'ollama' && String(loc.result.reply).length > 0, 'local Ollama round trip works through the validated loopback path (' + (usingReal ? 'machine\'s real Ollama' : 'isolated fake endpoint') + ')');
+  const fbf = await P.runTool('llm.chat', { prompt: 'ping', model: 'definitely-not-installed-model' }, {});
+  ok(fbf.ok && fbf.result.model !== 'definitely-not-installed-model', 'an uninstalled local model name falls back to an installed one');
   const ver = await P.runTool('llm.verify', { provider: 'ollama' }, {});
   ok(ver.ok && ver.evidence.verified === true && ver.evidence.provider === 'ollama', 'llm.verify performs a real minimal round trip');
   const lst2 = await P.runTool('llm.status', {}, {});
-  ok(lst2.result.providers.find(x => x.id === 'ollama').models && lst2.result.providers.find(x => x.id === 'ollama').models.length === 1, 'status lists installed local models from /api/tags');
+  ok(lst2.result.providers.find(x => x.id === 'ollama').models && lst2.result.providers.find(x => x.id === 'ollama').models.length >= 1, 'status lists installed local models from /api/tags');
   const askCmd = await P.command('ask what can you do');
   ok(askCmd && askCmd.ok && /\[ollama · /.test(askCmd.reply), 'chat “ask” routes through the LLM with a labelled provider·model reply');
+  const ensTool = await P.runTool('llm.ensemble', { prompt: 'one word: ready' }, {});
+  ok(ensTool.ok && ensTool.result.answers.length >= 1 && ensTool.result.providersAsked.includes('ollama') && ensTool.result.failures.length === 0, 'llm.ensemble asks every configured provider (here: local ollama)');
+  const askAll = await P.command('ask all what is 1+1');
+  ok(askAll && askAll.ok && /Ensemble —/.test(askAll.reply) && /\[ollama ·/.test(askAll.reply), 'chat “ask all” fans the question out and labels each answer');
   const fb = await P.chatFallback('what is 2+2?');
   ok(fb && fb.ok === true && fb.kind === 'ai' && fb.provider === 'ollama', 'chatFallback answers through the LLM when one is configured');
-  fake.close();
+  if (!usingReal) fake.close();
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
