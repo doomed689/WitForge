@@ -132,7 +132,7 @@ const run = (t, a) => P.runTool(t, a || {}, {});
 
   /* spec coverage + selftest */
   const comp = P.compliance();
-  ok(comp.total === 168, 'spec registry has 168 sections');
+  ok(comp.total === 170, 'spec registry has 170 requirements (168 master + 2 platform)');
   const stt = P.selftestAll();
   /* §126: four truthful states — no FAIL is required; WARNING/NOT_TESTED are
    * honest statements about integrations that genuinely are not connected. */
@@ -253,6 +253,33 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok((P.state.ledger.accounts[bAv.id] || 0) === 400, 'buyer debited 100 LD (500-100)');
   const sumInv = Object.values(P.state.ledger.accounts).reduce((a, v) => a + v, 0);
   ok(sumInv === sumBefore, 'ledger sum invariant holds after forge + marketplace trade');
+
+  /* ── v1.66: human-in-the-loop steps — captcha/2FA/consent gates are
+   * completed by the owner, never bypassed by the platform ── */
+  const hitl1 = await P.runTool('mock.echo', { behaviour: 'needs-human' }, {});
+  ok(hitl1.state === 'WAITING_FOR_HUMAN' && hitl1.needsHuman, 'a tool that meets a human gate pauses as WAITING_FOR_HUMAN');
+  ok(hitl1.humanStep && hitl1.humanStep.kind === 'captcha', 'the pause names the gate kind and instructions');
+  ok(P.state.humanSteps.some(h => h.id === hitl1.needsHuman && h.status === 'pending'), 'the human step is recorded pending');
+  const hitl2 = await P.runTool('mock.echo', { behaviour: 'needs-human' }, {});
+  ok(hitl2.state === 'WAITING_FOR_HUMAN' && hitl2.needsHuman !== hitl1.needsHuman, 'repeating before resolving opens a new step — never a bypass');
+  ok(P.resolveHumanStep('hszz', '4242', 'test').ok === false, 'resolving an unknown step is rejected');
+  ok(P.resolveHumanStep(hitl1.needsHuman, '', 'test').ok === true, 'an empty answer still resolves (owner chose to proceed)');
+  ok(P.state.humanSteps.find(h => h.id === hitl1.needsHuman).status === 'resolved', 'the resolved step is stored');
+  const hitl3 = await P.runTool('mock.echo', { behaviour: 'needs-human' }, {});
+  ok(hitl3.state === 'SUCCEEDED' && hitl3.result && hitl3.result.humanProvided === '', 'the repeated command consumes the answer once and succeeds');
+  ok(P.state.humanSteps.find(h => h.id === hitl1.needsHuman).status === 'consumed', 'the consumed step is closed (single-use)');
+  const res2 = P.resolveHumanStep(hitl2.needsHuman, '4242', 'test');
+  ok(res2.ok && res2.step.status === 'resolved', 'the owner resolves a step with a real answer');
+  const hitl4 = await P.runTool('mock.echo', { behaviour: 'needs-human' }, {});
+  ok(hitl4.state === 'SUCCEEDED' && hitl4.result.humanProvided === '4242', 'the answer reaches the paused tool verbatim');
+  ok(P.state.humanSteps.find(h => h.id === hitl2.needsHuman).status === 'consumed', 'consumption closes the step — no replay');
+  const hitl5 = await P.runTool('mock.echo', { behaviour: 'needs-human' }, {});
+  ok(hitl5.state === 'WAITING_FOR_HUMAN', 'after consumption a fresh gate pauses again');
+  ok(P.resolveHumanStep(hitl2.needsHuman, 'again', 'test').ok === false, 'a consumed step cannot be re-resolved');
+  const cancel = P.cancelHumanStep(hitl5.needsHuman);
+  ok(cancel.ok && cancel.step.status === 'cancelled', 'a pending step can be cancelled');
+  ok((await P.command('human steps')).ok, 'chat lists human steps');
+  ok(P.command('resolve ' + hitl5.needsHuman + ' with x').ok === true || P.state.humanSteps.find(h => h.id === hitl5.needsHuman).status === 'cancelled', 'chat resolve on a cancelled step reports honestly without crashing');
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');

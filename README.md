@@ -1,4 +1,4 @@
-# LIAM · v1.65 — chat-controlled economy, engagement and owner protection
+# LIAM · v1.66 — human-in-the-loop gates + a fixed chat rail
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,52 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 89 | ledger, SSRF, sandbox, allow-list, approvals, router |
+| `platform-test.js` | 106 | ledger, SSRF, sandbox, allow-list, approvals, router, human-in-the-loop steps |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
-| `smoke-test.js` | 53 | boots the real server and renders every view (including the six v1.65 workspaces) |
+| `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
 `node analysis/gap-scan.js` → **84/84 probed requirements present**.
+
+## v1.66 — human gates belong to the human (and the chat rail actually answers)
+
+Two things landed in this release, one by design and one by discovery.
+
+**1. Human-in-the-loop steps (requirement #169 in the registry, `LIVE`).**
+When any tool meets a human gate — a captcha, a 2FA prompt, a consent
+screen, a credential box — the platform now pauses as `WAITING_FOR_HUMAN`
+instead of failing or pretending. The step appears in Chat and in the
+Approvals view with kind, service and instructions. You complete the gate
+*yourself*, then say:
+
+```
+resolve <step-id> with <your answer>
+```
+
+and repeat the original command. Your answer is injected into the paused
+tool exactly once, then the step is closed (`pending → resolved → consumed`)
+— single-use, masked in audit, never stored as a permission, never reused.
+`stop <step-id>` cancels a pending step. The platform itself completes no
+captcha and defeats no human gate: a human acts, the machine waits and
+remembers. This is the honest version of “act on my behalf” — the same
+rule the spec already states (§130–§139: *human-required steps are
+completed by the user*), now executable end to end. Tools declare gates by
+returning `{ needsHuman: { kind, service, instructions, fields } }`; the
+`mock.hitl` adapter exercises the full round trip through the real
+pipeline (17 new platform checks, 4 new smoke checks, plus
+`POST /api/human-steps/:id/resolve|cancel`).
+
+**2. Chat over HTTP lost every reply — fixed.** The server called the
+async `command()` router without `await`, so the JSON response serialized
+the pending Promise as `{}`: state changes landed, but no reply text ever
+reached the browser. The smoke suite only ever asserted state, so it never
+caught it. It now asserts the reply body too, and the route awaits. One
+line, found by end-to-end testing of the new gate flow.
+
+Also: the requirement registry now carries **170 entries** — the 168
+master sections plus #169 (human gates) and #170 (real-money LD economy,
+`LOCKED`, unlock path documented in `ROADMAP-REAL-MONEY.md`).
 
 ## v1.65 — chat controls the economy, and the owner is protected
 

@@ -17,7 +17,7 @@ const caps = require('./capabilities.js');
 const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 
-const VERSION = '1.65.0';
+const VERSION = '1.66.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -35,7 +35,7 @@ function load() {
 function freshState() {
   return {
     conversations: [], tasks: [], projects: [], agents: [], memory: [], knowledge: [],
-    audit: [], permissions: {}, approvals: [], emergency: 'NORMAL', autonomous: false,
+    audit: [], permissions: {}, approvals: [], humanSteps: [], emergency: 'NORMAL', autonomous: false,
     secret: crypto.randomBytes(32).toString('hex'),
     owner: null, sessions: {}, evidence: [], legal: seedLegal(),
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
@@ -307,6 +307,57 @@ function decideApproval(id, decision) {
   return { ok: true, approval: ap };
 }
 const approved = id => { const a = S.approvals.find(x => x.id === id); return a && a.status === 'approved'; };
+
+/* ── v1.66: Human-in-the-loop steps ──────────────────────────────────
+ * The legitimate alternative to bypassing human gates (captcha, 2FA,
+ * consent screens, credential entry). When a tool meets a human gate it
+ * pauses as WAITING_FOR_HUMAN; only the owner resolves the step in chat
+ * or the Approvals view. A resolved answer is data the paused tool
+ * consumes exactly once on the repeated command — it is single-use,
+ * masked in audit, never a permission, and never weakens policy. The
+ * platform itself completes no captcha and defeats no gate: a human acts. */
+const HUMAN_STEP_KINDS = ['captcha', '2fa', 'consent', 'credential-entry', 'physical', 'other'];
+function requestHumanStep(toolId, cid, spec) {
+  spec = spec || {};
+  const kind = HUMAN_STEP_KINDS.includes(String(spec.kind)) ? String(spec.kind) : 'other';
+  const hs = {
+    id: 'hs' + (S.seq++).toString(36), toolId: String(toolId), cid: cid || null, kind,
+    service: spec.service ? String(spec.service).slice(0, 60) : null,
+    instructions: maskSecrets(String(spec.instructions || 'Complete the step the service requires.')).slice(0, 300),
+    fields: Array.isArray(spec.fields) ? spec.fields.slice(0, 8).map(f => String(f).slice(0, 40)) : [],
+    data: null, status: 'pending', requestedTs: Date.now()
+  };
+  S.humanSteps.unshift(hs); save();
+  audit('approval', `Human step ${hs.id} requested for ${toolId} (${kind}): ${hs.instructions}`, 'system', { step: hs.id, kind, result: 'WAITING_FOR_HUMAN' });
+  return hs;
+}
+function resolveHumanStep(id, data, actor) {
+  const hs = S.humanSteps.find(x => x.id === id);
+  if (!hs) return { ok: false, error: 'Unknown human step ' + id };
+  if (hs.status !== 'pending') return { ok: false, error: 'Human step ' + id + ' is already ' + hs.status };
+  hs.status = 'resolved';
+  hs.data = maskSecrets(String(data == null ? '' : data)).slice(0, 500);
+  hs.resolvedTs = Date.now();
+  audit('approval', `Human step ${id} (${hs.kind}) resolved by ${actor || 'user'}`, 'user', { step: id });
+  save();
+  return { ok: true, step: hs };
+}
+function consumeHumanStep(toolId) {
+  const hs = S.humanSteps.find(x => x.toolId === toolId && x.status === 'resolved');
+  if (!hs) return null;
+  hs.status = 'consumed'; hs.consumedTs = Date.now(); save();
+  audit('tool', `Human step ${hs.id} consumed by ${toolId} — single-use, closed`, 'system', { step: hs.id });
+  return hs;
+}
+function cancelHumanStep(id) {
+  const hs = S.humanSteps.find(x => x.id === id);
+  if (!hs) return { ok: false, error: 'Unknown human step ' + id };
+  if (hs.status !== 'pending') return { ok: false, error: 'Human step ' + id + ' is already ' + hs.status };
+  hs.status = 'cancelled'; hs.cancelledTs = Date.now();
+  audit('approval', `Human step ${id} cancelled by user`, 'user', { step: id });
+  save();
+  return { ok: true, step: hs };
+}
 
 /* ── Adapters & tools: real execution only ────────────── */
 const ADAPTERS = [
@@ -622,8 +673,11 @@ const TOOLS = {
       return { service: a.service, disconnected: results.map(r => r.account), grantsRevoked: results.reduce((n2, r) => n2 + r.revokedGrants.length, 0) };
     } },
   /* ── v1.64: §124 mock adapter executed through the real pipeline ── */
-  'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: a => {
+  'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: (a, o) => {
       const ad = caps.MOCK_ADAPTERS.find(x => x.behaviour === (a.behaviour || 'succeed')) || caps.MOCK_ADAPTERS[0];
+      if (o && o.humanStep && ad.behaviour === 'needs-human') {
+        return { simulation: true, adapter: ad.id, behaviour: ad.behaviour, verified: true, humanProvided: o.humanStep.data, step: o.humanStep.id, mode: 'SIMULATION — human step satisfied; test instrument only' };
+      }
       ad.authenticate();
       const out = ad.executeAction();
       const v = ad.verifyAction();
@@ -878,8 +932,21 @@ async function runTool(toolId, args, opts) {
     capability: tool.cap, decision: 'ALLOW', risk: assessment.class, result: 'EXECUTING', approval: opts.approvalId || null
   });
   const t0 = Date.now();
+  const humanStep = consumeHumanStep(toolId);
   let out;
-  try { out = await tool.run(args); } catch (e) { out = { error: 'Tool threw: ' + e.message }; }
+  try { out = await tool.run(args, { humanStep }); } catch (e) { out = { error: 'Tool threw: ' + e.message }; }
+  /* v1.66: a tool that meets a human gate (captcha/2FA/consent) pauses here.
+   * The gate is never bypassed: the owner resolves the step, then repeats. */
+  if (out && !out.error && out.needsHuman) {
+    const hs = requestHumanStep(toolId, cid, out.needsHuman);
+    return finish({
+      state: 'WAITING_FOR_HUMAN', needsHuman: hs.id,
+      humanStep: { kind: hs.kind, service: hs.service, instructions: hs.instructions, fields: hs.fields },
+      error: 'Human step required (' + hs.kind + '): ' + hs.instructions + ' — complete it, then say “resolve ' + hs.id + ' with <your answer>” and repeat the command.',
+      correction: taskEngine.correctionPlan({ class: 'RECOVERABLE' }),
+      evidence: { error: 'human step required', needsHuman: hs.id }
+    });
+  }
   const failureClass = out.error ? taskEngine.classifyFailure(out) : null;
   const state = out.error ? (out.blocked ? 'BLOCKED' : (out.partial ? 'PARTIALLY_SUCCEEDED' : 'FAILED')) : 'SUCCEEDED';
   const correction = failureClass ? taskEngine.correctionPlan(out) : null;
@@ -957,6 +1024,19 @@ async function command(text) {
   if (low.includes('lockdown') && low.includes('confirm')) { setEmergency('LOCKDOWN', true); return R('LOCKDOWN engaged. Execution blocked; audit and recovery preserved.'); }
   if (low.includes('lockdown')) { const r = setEmergency('LOCKDOWN'); return r.ok ? R('LOCKDOWN engaged.') : R(r.error); }
   if ((m = low.match(/^approve (\w+)/))) { const r = decideApproval(m[1], 'approve'); return r.ok ? R('Approved: ' + r.approval.desc) : R(r.error); }
+  /* v1.66: human-in-the-loop step resolution — the answer keeps its original
+   * case (codes and captchas are case-sensitive), so match on q, not low. */
+  if ((m = q.match(/^resolve (hs\w+)(?:\s+with\s+([\s\S]+)|\s+([\s\S]+))?$/i))) {
+    const data = (m[2] != null ? m[2] : (m[3] != null ? m[3] : '')).trim();
+    const r = resolveHumanStep(m[1].toLowerCase(), data, 'chat');
+    return r.ok ? R(`Human step ${r.step.id} (${r.step.kind}) resolved and audited. Repeat the original command — your answer is injected once, then the step is closed.`) : R(r.error);
+  }
+  if (low === 'human steps' || low === 'pending steps' || low === 'steps') {
+    const list = S.humanSteps.slice(0, 10);
+    return R(list.length
+      ? 'Human steps (newest first):\n' + list.map(h => `${h.id} [${h.status.toUpperCase()}] ${h.toolId} (${h.kind})${h.service ? ' · ' + h.service : ''} — ${h.instructions}`).join('\n')
+      : 'No human steps have been requested. A step appears when a tool meets a captcha, 2FA, consent or other human gate — the platform pauses and asks you; it never bypasses the gate.');
+  }
   if ((m = low.match(/^stop schedule (sch-[\w]+)$/))) {
     const r = S.schedules.find(x => x.id === m[1] && !x.done);
     if (!r) return R('No active schedule with id ' + m[1] + '.');
@@ -981,6 +1061,7 @@ async function command(text) {
     const list = kernel.stopReport(S);
     return R(list.length ? 'Active stops:\n' + list.map(x => `• ${x.scope}${x.target !== '*' ? ':' + x.target : ''} — ${x.reason}`).join('\n') : 'No emergency stops active. Say “stop network” or “emergency stop all”.');
   }
+  if ((m = low.match(/^stop (hs\w+)$/))) { const r = cancelHumanStep(m[1]); return r.ok ? R('Human step ' + m[1] + ' cancelled and audited.') : R(r.error); }
   if ((m = low.match(/^stop (\w+)/))) { const r = decideApproval(m[1], 'stop'); return r.ok ? R('Stopped: ' + r.approval.desc) : R(r.error); }
   if ((m = low.match(/^grant ([\w.]+)/)) ) { grant(m[1]); return R('Permission granted: ' + m[1] + ' (granted by your request, audited).'); }
   if ((m = low.match(/^revoke ([\w.]+)/))) { const r = revoke(m[1]); return R(r.ok ? 'Permission revoked: ' + m[1] + ' (state REVOKED — token no longer validates).' : r.error); }
@@ -2332,7 +2413,7 @@ function importManifest(man, confirmed) {
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
-  { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
+  { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
   { group: 'Events, lotto, rewards', items: ['“events” · “join event evt-arena-cup” · “close event evt-arena-cup winner <avatar>”', '“open lotto round” · “buy 3 lotto tickets” · “draw lotto confirm” · “verify lotto”', '“sign in” · “my streak”', '“daily tasks” · “weekly tasks” · “claim task d-tools”'] },
   { group: 'Avatars & arena', items: ['“create avatar Korr as nord” · “races”', '“battle <avatar> vs <rival>” · “arena wager A vs B confirm”', '“talents” · “unlock talent bulwark for <avatar>”'] },
@@ -2513,6 +2594,8 @@ module.exports = {
   observability, releaseInfo,
   EMERGENCIES, setEmergency, grant, revoke, permitted,
   createApproval, decideApproval, approved,
+  requestHumanStep, resolveHumanStep, consumeHumanStep, cancelHumanStep, HUMAN_STEP_KINDS,
+  humanSteps: () => S.humanSteps.slice(0, 100),
   ADAPTERS, TOOLS, runTool, guardedFetch,
   ledgerPost, wager, economySelfTest,
   command, preview, USERFILES,

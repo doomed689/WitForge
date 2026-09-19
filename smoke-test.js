@@ -103,6 +103,17 @@ const driver = `
   const st5 = await (await fetch('/api/state')).json();
   ok(st5.ledger.tx.length > 0, 'economy ledger has simulation transactions');
 
+  // v1.66 regression: the chat route must await the async command — a missing
+  // await serialized the Promise as {} and ate every reply over HTTP.
+  const chatReply = await (await fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'human steps' }) })).json();
+  ok(chatReply.ok === true && typeof chatReply.reply === 'string' && chatReply.reply.length > 0, 'chat over HTTP returns a real reply (awaited command), not {}');
+  const hitlRun = await (await fetch('/api/tools/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'mock.echo', args: { behaviour: 'needs-human' } }) })).json();
+  ok(hitlRun.state === 'WAITING_FOR_HUMAN' && hitlRun.needsHuman, 'HTTP tool run pauses at a human gate');
+  const hitlRes = await (await fetch('/api/human-steps/' + hitlRun.needsHuman + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: 'zz7' }) })).json();
+  ok(hitlRes.ok === true, 'HTTP human-step resolve works');
+  const hitlRun2 = await (await fetch('/api/tools/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool: 'mock.echo', args: { behaviour: 'needs-human' } }) })).json();
+  ok(hitlRun2.state === 'SUCCEEDED' && hitlRun2.result && hitlRun2.result.humanProvided === 'zz7', 'resolved answer is consumed exactly once over HTTP');
+
   // palette
   openPalette(); $('#paletteInput').value = 'sec'; paintPalette();
   ok(paletteItems.some(i => i.label === 'Security'), 'palette ranks Security');

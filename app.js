@@ -60,7 +60,7 @@ const MODULES = [
   m('notifications', 'SYSTEM', 'Notifications', '✦', 'operational', 'Local LIAM store', 'Local notification centre fed by audit events.'),
   m('documentation', 'SYSTEM', 'Documentation', '▣', 'operational', 'Legal + lineage records', 'Versioned legal documents, architecture lineage and truth rules.'),
   m('status', 'SYSTEM', 'Status', '◇', 'operational', 'Local LIAM store', 'Live runtime truth: adapters, emergency state, ledger mode, connectivity.'),
-  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '168-section registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
+  m('spec', 'SYSTEM', 'Spec', '◈', 'operational', '170-requirement registry', 'Live coverage of the definitive WitForge specification with evidence probes.'),
   m('settings', 'SYSTEM', 'Settings', '⌁', 'operational', 'Local LIAM store', 'User-controlled preferences and data controls.')
 ];
 const byId = id => MODULES.find(x => x.id === id);
@@ -422,11 +422,14 @@ function renderPermissions() {
 /* Approvals */
 function renderApprovals() {
   const pend = S.approvals.filter(a => a.status === 'pending');
+  const steps = S.humanSteps || [];
   $('#main').innerHTML = head('HUMAN DECISIONS', 'Approvals', 'High-risk actions wait here until you approve or stop them — by button or by asking in Chat.') +
   `<div class="facet-card"><h4>Pending (${pend.length})</h4>${pend.length ? pend.map(a => row(fmtTime(a.ts), `${esc(a.desc)} <small>${a.id}</small>`, `<button class="mini-btn" data-d="approve" data-id="${a.id}">Approve</button><button class="mini-btn danger" data-d="stop" data-id="${a.id}">Stop</button>`)).join('') : '<p class="empty-note">Nothing pending.</p>'}</div>
+   ${steps.length ? `<div class="facet-card"><h4>Human steps (${steps.filter(h => h.status === 'pending').length} pending)</h4>${steps.slice(0, 8).map(h => row(fmtTime(h.requestedTs), `${esc(h.instructions)} <small>${h.id} · ${esc(h.kind)}${h.service ? ' · ' + esc(h.service) : ''} · ${h.status.toUpperCase()}</small>`, h.status === 'pending' ? `<button class="mini-btn danger" data-d="stop" data-id="${h.id}">Cancel</button>` : '')).join('')}<p class="empty-note">Complete the gate yourself, then in Chat: “resolve &lt;id&gt; with &lt;your answer&gt;” and repeat the command. The platform never bypasses a human gate.</p></div>` : ''}
    <div class="facet-card"><h4>Decided</h4>${S.approvals.filter(a => a.status !== 'pending').slice(0, 12).map(a => row(fmtTime(a.ts), `${esc(a.desc)} → <b>${a.status.toUpperCase()}</b>`)).join('') || '<p class="empty-note">None yet.</p>'}</div>`;
   $('#main').onclick = async e => {
     const b = e.target.closest('[data-d]'); if (!b) return;
+    if (/^hs/.test(b.dataset.id)) { await post(`/api/human-steps/${b.dataset.id}/cancel`, {}); setView('approvals', { silent: true }); return; }
     await post(`/api/approvals/${b.dataset.id}`, { decision: b.dataset.d });
     setView('approvals', { silent: true });
   };
@@ -550,7 +553,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.65.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.66.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -763,7 +766,7 @@ async function renderSpec() {
   if (!j.ok) { $('#main').innerHTML = head('SPEC', 'Spec', 'Compliance registry unavailable.'); return; }
   const c = j.coverage;
   const counts = c.counts;
-  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 168 sections of the WitForge master specification with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
+  $('#main').innerHTML = head('DEFINITIVE ARCHITECTURE', 'Specification Coverage', 'All 170 requirements (168 master sections + 2 platform) with truthful status and live evidence probes.', '<span class="pill operational">' + c.total + ' SECTIONS</span>') +
   `<div class="stat-grid">
     <div class="stat-card"><p class="stat-label">LIVE</p><p class="stat-value">${counts.LIVE || 0}</p></div>
     <div class="stat-card"><p class="stat-label">PARTIAL</p><p class="stat-value">${counts.PARTIAL || 0}</p></div>
@@ -1242,7 +1245,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.63.0 · 168-SECTION COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.66.0 · 170-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

@@ -6,7 +6,7 @@ tranche. They are kept in the tree so every claim in `README.md`, `STATUS.md` an
 
 | File | Purpose | Runnable? |
 |---|---|---|
-| `WITFORGE-SPEC-GAP-ANALYSIS.md` | The report: method, before/after coverage, what was implemented, what remains EXTERNAL/LOCKED/PARTIAL, and the full 168-section table with evidence pointers | read-only |
+| `WITFORGE-SPEC-GAP-ANALYSIS.md` | The report: method, before/after coverage, what was implemented, what remains EXTERNAL/LOCKED/PARTIAL, and the full registry table (170 requirements) with evidence pointers — regenerated, never hand-edited | read-only (regenerate with `python3 analysis/report.py`) |
 | `gap-scan.js` | Requirement-level probes against the live modules. `node analysis/gap-scan.js` (summary) or `--json` | **yes — run any time** |
 | `report.py` | Regenerates `WITFORGE-SPEC-GAP-ANALYSIS.md` from `spec-coverage.js` + `gap-scan.js` so the document cannot drift from the code | yes (`python3 analysis/report.py`) |
 | `parse-spec.js`, `spec-sections.json` | Parses the uploaded master specification (`Witforge.txt`) into its 166 numbered sections (27 and 90 are absent from the source text) | yes |
@@ -20,7 +20,7 @@ tranche. They are kept in the tree so every claim in `README.md`, `STATUS.md` an
 
 ```sh
 node analysis/gap-scan.js          # 84/84 probed requirements present
-npm test                           # 335 checks across five suites, 0 failures
+npm test                           # 479 checks across six suites, 0 failures
 npm run build && npm run lint      # source validation + project lint rules
 npm run selftest                   # §126 self-test (PASS/FAIL/WARNING/NOT_TESTED)
 python3 analysis/report.py         # regenerate the report
@@ -35,3 +35,17 @@ python3 analysis/report.py         # regenerate the report
   authority exists.
 * Probe and registry notes name the evidence (module, endpoint, command or test)
   so any reader can re-check a single claim without repeating the whole analysis.
+
+## Provenance notes (v1.66)
+
+* `report.py` was listed in the v1.64 table but its file never reached the
+  repository; it was rebuilt in v1.66 against the live instruments and now
+  regenerates the whole gap-analysis document (registry export, gap-scan run,
+  test counts) so the numbers above cannot drift.
+* `patch7-specview.py` enriched the Spec workspace and was applied before the
+  upload, but the script itself was never recovered. Its effects are visible
+  in `app.js` (Spec view) and `spec-coverage.js`; do not re-apply anything
+  claiming to be it without reading those files first.
+* The registry now carries 170 requirements: the 168 master-specification
+  sections (27 and 90 absent from the source text) plus platform additions
+  #169 (human gates, LIVE) and #170 (real-money LD economy, LOCKED).

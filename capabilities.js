@@ -262,6 +262,7 @@ function mockAdapter(id, behaviour) {
       if (b === 'transient-failure') return { ok: false, error: 'simulated transient failure', failureClass: 'RECOVERABLE', retryable: true };
       if (b === 'permanent-failure') return { ok: false, error: 'simulated permanent failure', failureClass: 'IRREVERSIBLE' };
       if (b === 'security-block') return { ok: false, error: 'simulated security block', failureClass: 'SECURITY_BLOCK', blocked: true };
+      if (b === 'needs-human') return { ok: false, needsHuman: { kind: 'captcha', service: 'mock.portal', instructions: 'Enter the 4-character code shown by the mock portal', fields: ['code'] } };
       return { ok: true, simulated: true, echoed: true };
     },
     verifyAction() { return { verified: b !== 'verify-failure', simulated: true }; },
@@ -276,7 +277,8 @@ const MOCK_ADAPTERS = [
   mockAdapter('mock.transient', 'transient-failure'),
   mockAdapter('mock.denied', 'auth-failure'),
   mockAdapter('mock.hostile', 'security-block'),
-  mockAdapter('mock.verifyfail', 'verify-failure')
+  mockAdapter('mock.verifyfail', 'verify-failure'),
+  mockAdapter('mock.hitl', 'needs-human')
 ];
 
 /* ── Platform presence probes (§19, §26–§30) ─────────────────────── */

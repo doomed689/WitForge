@@ -88,7 +88,7 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       conversations: s.conversations, tasks: s.tasks, projects: s.projects, agents: s.agents,
       memory: s.memory, knowledge: s.knowledge, audit: s.audit, permissions: s.permissions,
-      approvals: s.approvals, emergency: s.emergency, ledger: s.ledger,
+      approvals: s.approvals, humanSteps: (s.humanSteps || []).slice(0, 50), emergency: s.emergency, ledger: s.ledger,
       reminders: s.reminders, schedules: s.schedules, notifications: s.notifications.slice(0, 30),
       avatars: arena.list(), talentTree: arena.TALENTS,
       adapters: P.adaptersLive().map(a => ({ id: a.id, name: a.name, state: a.state, caps: a.caps })),
@@ -141,7 +141,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/api/command' && req.method === 'POST') {
     const b = await body(req);
-    const r = P.withCid(() => P.command(b.text));
+    const r = await P.withCid(() => P.command(b.text));
     if (r) return json(res, 200, r);
     /* Nothing matched. Say so, in plain words, with the way forward — chat is
      * the control surface, so it never answers a request with silence. */
@@ -403,6 +403,10 @@ const server = http.createServer(async (req, res) => {
   if ((m = p.match(/^\/api\/approvals\/([^/]+)$/)) && req.method === 'POST') {
     const b = await body(req);
     return json(res, 200, P.decideApproval(m[1], b.decision));
+  }
+  if ((m = p.match(/^\/api\/human-steps\/([^/]+)\/(resolve|cancel)$/)) && req.method === 'POST') {
+    const b = await body(req);
+    return json(res, 200, m[2] === 'resolve' ? P.resolveHumanStep(m[1], b.data, 'api') : P.cancelHumanStep(m[1]));
   }
 
   /* ── tools & economy ── */

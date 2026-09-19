@@ -137,7 +137,7 @@ const SECTIONS = [
   C(126, 'SELF-TEST', 'Platform', 'LIVE', 'Self-test reports PASS/FAIL/WARNING/NOT_TESTED across configuration, database, auth, permissions, integrations, security controls, dependencies, audit and recovery.', 'platform.selftestAll; /api/selftest; npm run selftest'),
   C(127, 'TERMUX DEVELOPMENT', 'Platform', 'LIVE', 'package.json defines the documented commands and every one was executed: npm run build (source validation), npm run lint (project rules), npm test (5 suites), npm run dev/start, npm run selftest, npm run health. npm install is a truthful no-op (zero dependencies).', 'package.json · build.js · lint.js · INSTALL.md §3/§10/§14'),
   C(128, 'INSTALLATION VALIDATION', 'Platform', 'LIVE', 'Installation validation documented: prerequisites, supported Node, dependency installation, environment variables, secure configuration, database initialization, first-run setup, startup, health check, tests, shutdown, upgrade and rollback.', 'INSTALL.md'),
-  C(129, 'VERSIONING', 'Platform', 'LIVE', 'Semantic version 1.65.0 with build date, source revision, dependency state, test status, known limitations and security status.', 'platform.releaseInfo; /api/version; chat \'release\''),
+  C(129, 'VERSIONING', 'Platform', 'LIVE', 'Semantic version 1.66.0 with build date, source revision, dependency state, test status, known limitations and security status.', 'platform.releaseInfo; /api/version; chat \'release\''),
   C(130, 'UNIVERSAL ACCOUNT LIFECYCLE', 'Connectors', 'PARTIAL', 'Local lifecycle complete; external account ops await connectors.'),
   C(131, 'ACCOUNT CREATION WORKFLOW', 'Connectors', 'POLICY', '16-step legitimate workflow codified; no automated bypass.'),
   C(132, 'ACCOUNT CREATION BOUNDARIES', 'Connectors', 'POLICY', 'No captcha/MFA bypass; user completes verification.'),
@@ -176,6 +176,9 @@ const SECTIONS = [
   C(165, 'ABSOLUTE TRUTHFULNESS RULE', 'Core', 'POLICY', 'Unavailable is reported as unavailable, always.'),
   C(166, 'FINAL USER EXPERIENCE', 'Core', 'LIVE', 'One conversational surface over a truthful operating platform.'),
   C(167, 'FINAL PRODUCT ARCHITECTURE', 'Platform', 'LIVE', 'Browser control surface + authoritative local server + registries.'),
-  C(168, 'FINAL WITFORGE PRINCIPLE', 'Core', 'POLICY', 'AI proposes; humans authorize; server enforces; audit remembers.')
+  C(168, 'FINAL WITFORGE PRINCIPLE', 'Core', 'POLICY', 'AI proposes; humans authorize; server enforces; audit remembers.'),
+  /* Platform requirements added after the master spec (additive, numbered on). */
+  C(169, 'HUMAN GATES ARE THE HUMAN\u2019S', 'Authority', 'LIVE', 'When an action meets a human gate (captcha, 2FA, consent, credential entry), the platform pauses as WAITING_FOR_HUMAN and the owner completes the gate themselves; answers are single-use, audited and masked, and the platform never completes or bypasses a gate.', 'platform runTool WAITING_FOR_HUMAN; chat "human steps" / "resolve <id> with <answer>"; /api/human-steps'),
+  C(170, 'REAL-MONEY LD ECONOMY', 'Economy', 'LOCKED', 'Live LD\u2194AUD trading beyond simulation requires a verified payment provider and an AU regulatory path (non-cash-payment-facility analysis under ASIC RG 121, AUSTRAC AML/CTF assessment with records under s287(2) AML/CTF Act, and no real-money wagering without a gambling licence); until then realMode stays off and ROADMAP-REAL-MONEY.md documents the unlock plan.', 'platform setRealMode + economyConfig; ROADMAP-REAL-MONEY.md')
 ];
 module.exports = { SECTIONS };
