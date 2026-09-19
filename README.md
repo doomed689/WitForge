@@ -1,4 +1,4 @@
-# LIAM · v1.69 — plans 5+3, LD packages, social connectors, chat self-update
+# LIAM · v1.70 — ask consensus: the ensemble, synthesized
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,22 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 144 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM, plans/LD packages/social/self-update |
+| `platform-test.js` | 145 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM ensemble + consensus, plans/LD packages/social/self-update |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
 | `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
 `node analysis/gap-scan.js` → **84/84 probed requirements present**.
+
+## v1.70 — ask consensus
+
+`ask consensus <question>` runs the full ensemble, then has the default
+provider synthesize one balanced verdict: `🤝 Consensus [provider · model]`
+followed by the labelled answers considered (and any provider failures).
+Disagreement between models is reported, not smoothed away. Releases are
+now tagged (`v1.65.0` … `v1.70.0`), and the self-update check is verified
+end-to-end against the live repo ("Up to date" once the CDN purges).
 
 ## v1.69 — subscriptions reshaped, LD packages, social connectors, self-update
 

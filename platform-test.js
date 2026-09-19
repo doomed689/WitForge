@@ -345,6 +345,13 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(askAll && askAll.ok && /Ensemble —/.test(askAll.reply) && /\[ollama ·/.test(askAll.reply), 'chat “ask all” fans the question out and labels each answer');
   const fb = await P.chatFallback('what is 2+2?');
   ok(fb && fb.ok === true && fb.kind === 'ai' && fb.provider === 'ollama', 'chatFallback answers through the LLM when one is configured');
+  const cons = await P.command('ask consensus what is one plus one?');
+  ok(cons && cons.ok && /Consensus \[/.test(cons.reply) && /answers considered \(1\)/.test(cons.reply), 'chat "ask consensus" ensembles then synthesizes a labelled verdict');
+  const expCap = await P.runTool('llm.chat', { prompt: 'ttl check' }, {});
+  ok(expCap.ok === true, 'capability fresh before the expiry test');
+  P.state.permissions['llm.chat'].token.exp = Date.now() - 1000; P.save();
+  const expCap2 = await P.runTool('llm.chat', { prompt: 'ttl check 2' }, {});
+  ok(expCap2.ok === true && P.state.permissions['llm.chat'].state === 'GRANTED' && P.state.permissions['llm.chat'].token.exp > Date.now(), 'an EXPIRED capability on an owner-initiated medium tool is refreshed via the documented EXPIRED→REQUESTED path, not denied');
   if (!usingReal) fake.close();
 
   /* ── v1.69: plans 5+3, LD packages, social connectors, self-update ── */

@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.69.0';
+const VERSION = '1.70.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -228,6 +228,12 @@ function setCapabilityState(cap, next, opts) {
 function requestCapability(cap, opts) {
   opts = opts || {};
   const level = opts.level || RISK_LEVEL_DEFAULT[String(capRisk(cap)).toLowerCase()] || 'EXECUTE';
+  // v1.70 fix: expiry is COMPUTED from the token, while the state machine
+  // validates the STORED state — a GRANTED record with a stale token was
+  // stuck (GRANTED→REQUESTED is illegal), so nothing could ever be
+  // re-granted after its TTL. Normalising computed-EXPIRED to stored-EXPIRED
+  // opens the documented EXPIRED → REQUESTED → GRANTED path.
+  if (capabilityState(cap) === 'EXPIRED') setCapabilityState(cap, 'EXPIRED', { reason: 'token expired (normalised for re-request)' });
   // A fresh request always re-enters through REQUESTED, so re-granting after a
   // revocation/expiry follows the documented state machine (§9).
   if (!['REQUESTED', 'GRANTED', 'SUSPENDED'].includes(capabilityState(cap))) {
@@ -1070,7 +1076,17 @@ async function runTool(toolId, args, opts) {
     return caps.toolResult({ state: 'FAILED', error: 'Unknown tool ' + toolId, cid, verification: { method: 'registry lookup', result: 'not found' } });
   }
   const manifest = caps.toolManifest({ id: toolId, capabilities: [tool.cap], risk: tool.risk, inputs: Object.keys(tool.inputs || {}), verification: tool.verification || 'structured result + evidence hash' });
-  const { assessment, decision, ctx } = actionPolicy(toolId, args, opts);
+  let { assessment, decision, ctx } = actionPolicy(toolId, args, opts);
+  /* §9/§46: an EXPIRED capability on an owner-initiated low/medium-risk tool
+   * re-enters the documented state machine (EXPIRED → REQUESTED) with a
+   * fresh token — the request typed in chat IS the permission. High-risk
+   * tools keep their approval gate; security-blocked/revoked/denied still
+   * deny outright. */
+  if (decision.policyId === 'P-PERMISSION-BLOCKED' && ctx.permissionState === 'EXPIRED' && String(tool.risk).toLowerCase() !== 'high') {
+    requestCapability(tool.cap, { how: 'user-request', reason: 'capability expired — owner re-requested via chat', ttlMs: 3600e3 });
+    ({ assessment, decision, ctx } = actionPolicy(toolId, args, opts));
+    audit('security', 'CAPABILITY REFRESH ' + tool.cap + ' (expired → re-requested by owner)', 'system', { result: 'REGRANTED' });
+  }
   const base = {
     ok: false, tool: toolId, toolId, correlationId: cid, manifest,
     risk: { class: assessment.class, score: assessment.score, factors: assessment.factors, explanation: assessment.explanation },
@@ -1825,6 +1841,15 @@ async function command(text) {
   /* v1.67: the AI brain — explicit asks, provider selection, verification.
    * Matched late so rule-based intents keep priority: the router is the
    * audited surface; the LLM advises and answers, it does not execute. */
+  if ((m = q.match(/^ask consensus\s+([\s\S]+)$/i)) || (m = q.match(/^consensus[:\s]+([\s\S]+)$/i))) {
+    const ens = await runTool('llm.ensemble', { prompt: m[1] }, {});
+    if (!ens.ok) return R(ens.error);
+    if (!ens.result.answers.length) return R('No provider could answer, so there is nothing to synthesize. Failures: ' + (ens.result.failures.map(f => f.provider + ' (' + f.error + ')').join(', ') || 'none reported') + '.');
+    const transcript = ens.result.answers.map(x => '[' + x.provider + ' \u00b7 ' + x.model + ']\n' + x.reply).join('\n\n');
+    const r = await runTool('llm.chat', { prompt: 'Several AI models were asked the same question. Their answers follow.\n\n' + transcript + '\n\nProvide one balanced consensus answer in at most 120 words. If the models materially disagree, say exactly where.', maxTokens: 300 }, {});
+    const head = r.ok ? '\U0001F91D Consensus [' + r.result.provider + ' \u00b7 ' + r.result.model + ']: ' + r.result.reply : 'Consensus unavailable (' + (r.error || 'synthesizer failed') + ') \u2014 raw answers follow.';
+    return R(head + '\n\n\u2014 answers considered (' + ens.result.answers.length + '):\n' + ens.result.answers.map(x => '\u2022 [' + x.provider + ' \u00b7 ' + x.model + '] ' + String(x.reply).slice(0, 140) + (String(x.reply).length > 140 ? '\u2026' : '')).join('\n') + (ens.result.failures.length ? '\n\u26A0\uFE0F failed: ' + ens.result.failures.map(f => f.provider).join(', ') : ''));
+  }
   if ((m = q.match(/^ask all\s+([\s\S]+)$/i)) || (m = q.match(/^ensemble[:\s]+([\s\S]+)$/i))) {
     const r = await runTool('llm.ensemble', { prompt: m[1] }, {});
     if (!r.ok) return R(r.error);
@@ -2733,7 +2758,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
