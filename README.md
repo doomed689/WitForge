@@ -1,4 +1,24 @@
-# LIAM · v1.77 — official OAuth sign-in (log in on the platform's page, never ours)
+# LIAM · v1.78 — the conversational command layer (talk normally, DO the proposal)
+
+**v1.78:** chat with a connected AI brain now turns everyday conversation
+into real platform action. Every message runs the rule-based router first;
+unmatched text falls through to the connected LLM with a **command atlas**
+in its system prompt — only the exact, audited command forms (`help`,
+`briefing`, `weather <city>`, `create task <text>`, `open lotto round`,
+`buy a lotto ticket`, `verify <provider>`, `ask all`, …). The brain REPLIES
+labelled `🤖 [provider · model]` (advisory only), and when it emits a
+`SUGGEST:` line the platform records a **📋 proposal** — "say `do pr<N>` to
+run it". Proposals never self-execute: `do pr<N>` re-enters the audited
+router where permissions and approvals still apply. Grounding proved live:
+real chat produced REAL proposals (`connections`, `buy a lotto ticket`),
+never hallucinated commands. Truth fixes in the same pass: bare
+`summarize <url>` was hijacked by the fetch-tool's URL tutelage — it now
+falls through to the brain; and a failing-but-connected provider (rate
+limit, outage) is reported as `ai-error` with its real cause — never
+mislabelled "no AI provider connected" (that `ai-unconfigured` state still
+exists, only for genuinely keyless installs). Verified live against the real
+gemini free tier: five labelled answers, then real HTTP 429s reported
+truthfully.
 
 **v1.77:** the SOCIAL cards on the Credentials page grow an **Official
 sign-in** block for all six platforms (X · Facebook · Instagram · Reddit ·

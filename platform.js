@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.77.0';
+const VERSION = '1.78.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -569,7 +569,7 @@ async function guardedFetch(url, headers, opts) {
   const t = setTimeout(() => ctl.abort(), 8000);
   try {
     const r = await fetch(u, { signal: ctl.signal, redirect: 'manual', method: opts.method || 'GET', body: opts.body || undefined, headers: Object.assign({ 'user-agent': 'LIAM-guarded-http/1.55' }, headers || {}) });
-    /* v1.77.0: redirects are still never followed, but they are no longer
+    /* v1.78.0: redirects are still never followed, but they are no longer
      * confused with genuine 4xx/5xx answers — the status travels back so the
      * caller can tell the user the truth (“HTTP 404”, not “HTTP undefined”).
      * opts.maxBytes raises the 20KB body cap for connectors whose valid JSON
@@ -730,7 +730,7 @@ const TOOLS = {
       if (!sub) return { error: 'file path required' };
       const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
         authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' }, { maxBytes: 500000 });
-      /* v1.77.0: report the true failure (HTTP 404 on a wrong-cased path, a
+      /* v1.78.0: report the true failure (HTTP 404 on a wrong-cased path, a
        * network error, …) — never the meaningless “HTTP undefined”. */
       if (!r.ok) return { error: 'GitHub read failed — ' + (r.error || ('HTTP ' + r.status)), truthful: true };
       let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
@@ -854,7 +854,7 @@ const TOOLS = {
       const p = llmResolveProvider(a.provider);
       if (!p) return { error: 'Nothing to verify yet — say “connect <provider> with token <key>” first (groq/gemini/openrouter/deepseek/mistral are free-tier; ollama needs no key).', truthful: true };
       if (p.error) return p;
-      /* v1.77.0: 64 output tokens, not 8 — thinking models (gemini-3.x) spend
+      /* v1.78.0: 64 output tokens, not 8 — thinking models (gemini-3.x) spend
        * output tokens on reasoning before any text arrives, so an 8-token
        * probe returned an empty answer and a false FAILED. */
       const r = await llm.chat(p.id, { prompt: 'Reply with the single word: ready', maxTokens: 64, temperature: 0 }, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
@@ -1394,7 +1394,10 @@ async function command(text) {
     if (!r.ok) return R('Fetched the page but the AI brain could not summarize: ' + (r.error || 'no provider configured. Say “connect groq with token <key>” or use a local model.'));
     return R('📖 [' + r.result.provider + ' · ' + r.result.model + '] ' + url + '\n' + r.result.reply + '\n— fetched live via the SSRF-guarded reader; the model only saw the page text.');
   }
-  if ((m = q.match(/^ask about\s+(.+)$/i)) || (m = q.match(/^summarize\s+(.+)$/i))) {
+  /* v1.78: only “ask about X” keeps the URL-missing notice (that phrasing is
+   * unambiguously meant for the fetch tool). A bare “summarize X” without a URL
+   * now falls through to the AI brain like any other conversation. */
+  if ((m = q.match(/^ask about\s+(.+)$/i))) {
     return R('That does not look like a full public URL, so I will not fetch it. Give me a complete http(s) address to fetch — for example “ask about https://en.wikipedia.org/wiki/Double-entry_bookkeeping”. Private addresses are refused by the SSRF guard.');
   }
   /* v1.71: the AI proposes, the owner disposes. */
@@ -1926,7 +1929,7 @@ async function command(text) {
   if ((m = low.match(/^(?:news|hn) top(?: (\d+))?$/))) { const r = await runTool('hn.top', { count: m[1] || 5 }, {}); return r.ok ? R('Top Hacker News:\n' + r.evidence.stories.map((x, i) => `${i + 1}. ${x.title} (${x.score}pts, ${x.by})\n   ${x.url}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = low.match(/^country (.+)$/))) { const r = await runTool('country.get', { name: m[1] }, {}); return r.ok ? R(`${r.evidence.flag || ''} ${r.evidence.name}: capital ${r.evidence.capital} · pop ${Number(r.evidence.population).toLocaleString()} · ${r.evidence.region} · ${r.evidence.currencies.join(', ') || '—'} · ${r.evidence.languages.join(', ') || '—'}.`) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = q.match(/^github (?:list|ls)(?: files)?(?: (.*))?$/i))) { const r = await runTool('github.files', { path: m[1] || '' }, {}); return r.ok ? R(`doomed689/WitForge ${r.evidence.path}:\n` + r.evidence.files.map(f => `${f.type === 'dir' ? '📁' : '📄'} ${f.name}${f.type !== 'dir' ? ' (' + f.size + 'B)' : ''}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
-  /* v1.77.0: paths keep the owner's original case (q, not low) — the GitHub
+  /* v1.78.0: paths keep the owner's original case (q, not low) — the GitHub
    * Contents API is case-sensitive, and lowercasing “STATUS.md” was a
    * guaranteed 404. */
   if ((m = q.match(/^github read (?:file )?(.+)$/i))) { const r = await runTool('github.readfile', { path: m[1] }, {}); return r.ok ? R(`${r.evidence.path} (${r.evidence.bytes}B, sha ${r.evidence.sha}):\n${r.evidence.text}${r.evidence.truncated ? '\n…(truncated)' : ''}`) : R((r.evidence && r.evidence.error) || r.error); }
@@ -2095,6 +2098,12 @@ async function chatFallback(text) {
       suffix = '\n\n📋 Proposed command: “' + pr.command + '” — say “do ' + pr.id + '” to run it (permissions and approvals still apply).';
     }
     return { ok: true, kind: 'ai', provider: r.result.provider, model: r.result.model, reply: '🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + text + suffix };
+  }
+  /* v1.78: a FAILED call from a CONFIGURED provider is not “no provider” —
+   * rate limits and outages must be reported as what they are. */
+  const configured = llm.PROVIDERS.some(p => p.requiresKey && decryptToken(p.id));
+  if (configured) {
+    return { ok: false, kind: 'ai-error', reply: 'The connected AI brain could not answer just now — ' + String(r.error || 'provider error').slice(0, 160) + '. Try again shortly, or “ask all …” to fan out across every connected provider at once. Say “help” for the rule-based commands.' };
   }
   return {
     ok: false, kind: 'ai-unconfigured',

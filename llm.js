@@ -80,7 +80,14 @@ const SYSTEM_PROMPT =
   'suggest the closest chat command and say the user must run it; never invent features; ' +
   'be concise and practical. High-risk actions are approval-gated and that is by design. ' +
   'When the user asks for something a WitForge command could do, you may end your reply with a final ' +
-  'line "SUGGEST: <exact chat command>" — the platform shows it as a proposal the user must explicitly run.';
+  'line "SUGGEST: <exact chat command>" — the platform shows it as a proposal the user must explicitly run. ' +
+  /* v1.78: ground the model in the real command forms so every SUGGEST parses
+   * in the audited router — proposals with invented syntax were failing. */
+  'Use ONLY these exact command forms in SUGGEST lines, nothing else: ' +
+  '"help" · "briefing" · "weather <city>" · "tasks" · "create task <text>" · "plans" · "ld packages" · ' +
+  '"open lotto round" · "buy a lotto ticket" · "connections" · "verify <service>" · "github list" · ' +
+  '"github read <file>" · "ask about <url>" · "local models" · "protect me" · "update check" · ' +
+  '"ask all <question>" · "ask consensus <question>".';
 
 function providerById(id) { return PROVIDERS.find(p => p.id === id) || null; }
 

@@ -374,8 +374,17 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(br && br.ok && /Briefing/.test(br.reply) && /Human steps pending: \d+/.test(br.reply) && /AI proposals pending: \d+/.test(br.reply) && /Approvals pending: \d+/.test(br.reply), 'briefing aggregates steps, proposals and approvals in one reply');
   const ab1 = await P.command('ask about http://192.168.1.5/secret');
   ok(ab1 && ab1.ok && /blocked/i.test(ab1.reply), 'ask about refuses private addresses via the SSRF guard');
+  /* v1.78: bare “summarize X” (no URL) is conversation, not the fetch tool —
+   * it falls through to the AI brain; “ask about X” keeps its URL guidance. */
   const ab2 = await P.command('summarize notaurl');
-  ok(ab2 && ab2.ok && /fetch/i.test(ab2.reply), 'summarize with a non-URL answers honestly instead of guessing');
+  ok(!ab2, 'bare summarize with a non-URL falls through to the AI brain');
+  ok(!P.command ? true : !(await P.command('summarize something vague and conversational')), 'bare “summarize X” (no URL) falls through to the AI brain');
+  ok((await P.command('ask about not a url at all')).reply.includes('full public URL'), '“ask about X” without URL keeps its URL guidance');
+  ok(llmMod.SYSTEM_PROMPT.includes('open lotto round') && llmMod.SYSTEM_PROMPT.includes('briefing') && llmMod.SYSTEM_PROMPT.includes('Use ONLY these exact command forms'), 'system prompt carries the real-command atlas for parseable proposals');
+  /* (the unconfigured/error fallback truth tests live after fake.close() —
+   * with the scripted Ollama up, an unruled chat is TRUTHFULLY answered by
+   * the local model, never labelled “no provider”.) */
+
   /* ── v1.77: official OAuth sign-in ── */
   const oauthMod = require('./oauth.js');
   ok(oauthMod.OAUTH_IDS.length === 6 && oauthMod.OAUTH_IDS.includes('x') && oauthMod.OAUTH_IDS.includes('tiktok'), 'six OAuth providers supported');
@@ -462,6 +471,13 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   const expCap2 = await P.runTool('llm.chat', { prompt: 'ttl check 2' }, {});
   ok(expCap2.ok === true && P.state.permissions['llm.chat'].state === 'GRANTED' && P.state.permissions['llm.chat'].token.exp > Date.now(), 'an EXPIRED capability on an owner-initiated medium tool is refreshed via the documented EXPIRED→REQUESTED path, not denied');
   fake.close();
+
+  /* ── v1.78 truth tests: no keys and the local model now unreachable ── */
+  const fbNone = await P.chatFallback('something no rule matches zzz');
+  ok(fbNone && fbNone.kind === 'ai-unconfigured', 'fallback with no provider configured says so');
+  P.setCredential('gemini', 'bogus-key-for-truth-test'); const fbErr = await P.chatFallback('another unruled phrase zzz');
+  ok(fbErr && fbErr.kind === 'ai-error' && !/no AI provider is connected/.test(fbErr.reply), 'configured-but-failing provider is truthfully an error, never “no provider connected”');
+  P.revokeCredential('gemini');
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
