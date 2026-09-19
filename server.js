@@ -224,6 +224,19 @@ const server = http.createServer(async (req, res) => {
     const r = P.ldMarketCmd(Number(b.ld), b.side === 'sell' ? 'sell' : 'buy');
     return json(res, 200, r);
   }
+  /* ── v1.76: credentials surface — the same audited, AES-256-GCM store the
+   * chat “connect <id> with token …” command uses, now with a control surface.
+   * Tokens are write-only: they are never returned by any API response. */
+  if (p === '/api/credentials') {
+    const CRED_SERVICES = ['groq', 'gemini', 'openrouter', 'deepseek', 'mistral', 'github', 'stripe', 'x', 'facebook', 'reddit', 'instagram', 'linkedin', 'tiktok'];
+    if (req.method === 'GET') return json(res, 200, { ok: true, credentials: P.listCreds(), adapters: P.adaptersLive().map(a => ({ id: a.id, name: a.name, state: a.state })) });
+    const b = await body(req);
+    const id = String(b.id || '').toLowerCase().slice(0, 24);
+    if (!CRED_SERVICES.includes(id)) return json(res, 200, { ok: false, error: 'Unknown credential service “' + id + '”. Accepted: ' + CRED_SERVICES.join(', ') });
+    if (b.revoke) return json(res, 200, P.revokeCredential(id));
+    const r = P.setCredential(id, String(b.token || '').trim());
+    return json(res, 200, Object.assign(r, r.ok ? { reply: 'Credential for ' + id + ' stored encrypted. Verify it to prove it works — configuration alone never counts as connected.' } : {}));
+  }
   if (p === '/api/plans') {
     if (req.method === 'GET') return json(res, 200, { ok: true, plans: services.PLANS, current: services.currentSubscription(P.state) });
     const b = await body(req);

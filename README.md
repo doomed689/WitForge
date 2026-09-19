@@ -1,4 +1,12 @@
-# LIAM · v1.75 — the Global Trust & Compliance Charter
+# LIAM · v1.76 — the Credentials surface (every key, one page, portal guides)
+
+**v1.76:** new CONTROL workspace **Credentials** — one card per connectable
+service (5 AI providers · 6 social platforms · GitHub · Stripe), each with its
+official developer-portal steps and link, a paste field, and Connect / Verify /
+Revoke. Storage is the same audited AES-256-GCM store the chat command uses;
+tokens are write-only, never returned by any API. Verification replies are the
+platform's own real round trips. X carries its 2026 truth: no free tier —
+pay-per-use credits only.
 
 **v1.75:** the legal register gains its constitutional instrument —
 `LEGAL-GLOBAL-TRUST-CHARTER.md`. WitForge is decentralized and global: bound by

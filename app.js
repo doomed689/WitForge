@@ -35,6 +35,7 @@ const MODULES = [
   m('approvals', 'CONTROL', 'Approvals', '▣', 'operational', 'Local LIAM store', 'Your decisions on high-risk actions. Approve or stop, by button or by asking.'),
   m('termux', 'CONTROL', 'Termux', '⌁', 'disconnected', 'Termux runtime not detected', 'Termux execution is real only when a Termux runtime is detected.'),
   m('puter', 'CONTROL', 'Puter', '↻', 'config', 'Provider connection required', 'Optional Puter.js bridge: live model discovery and chat. External output stays untrusted.'),
+  m('credentials', 'CONTROL', 'Credentials', '⚿', 'operational', 'Encrypted local cred store', 'AI provider and social-platform keys: stored AES-256-GCM encrypted, never returned by APIs, used only for their own service. Verify proves each one live.'),
   m('github', 'CONTROL', 'GitHub', '↻', 'config', 'Token / OAuth required', 'Real GitHub REST reads when GITHUB_TOKEN is configured on the server.'),
   m('device', 'CONTROL', 'Device (capability)', '◇', 'disconnected', 'Device bridge not connected', 'Capability page for the device-bridge module.'),
   m('devices', 'CONTROL', 'Devices', '◇', 'operational', 'Local device registry', 'Paired devices with trust states, per-device capabilities, replay-protected commands and checkpoints.'),
@@ -65,7 +66,7 @@ const MODULES = [
 ];
 const byId = id => MODULES.find(x => x.id === id);
 const SECTIONS = ['CORE', 'AI', 'CONTROL', 'SECURITY', 'ACCOUNT', 'COMMERCE', 'SYSTEM'];
-const LIVE = new Set(['chat', 'conversations', 'tasks', 'projects', 'agents', 'memory', 'knowledge', 'files', 'tools', 'permissions', 'approvals', 'security', 'evidence', 'guardian', 'audit', 'devices', 'ldcoins', 'ldmarket', 'events', 'lotto', 'rewards', 'plans', 'status', 'settings', 'spec', 'documentation', 'profile', 'puter', 'avatar', 'arena', 'marketplace', 'automations', 'notifications', 'inventory']);
+const LIVE = new Set(['chat', 'conversations', 'tasks', 'projects', 'agents', 'memory', 'knowledge', 'files', 'tools', 'permissions', 'approvals', 'security', 'evidence', 'guardian', 'audit', 'devices', 'credentials', 'ldcoins', 'ldmarket', 'events', 'lotto', 'rewards', 'plans', 'status', 'settings', 'spec', 'documentation', 'profile', 'puter', 'avatar', 'arena', 'marketplace', 'automations', 'notifications', 'inventory']);
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 const $ = s => document.querySelector(s);
@@ -171,7 +172,7 @@ function openFacet(moduleId, facetId) {
 /* ── Live workspaces ─────────────────────────────────────────────── */
 async function renderLive(id) {
   await refreshState();
-  ({ chat: renderChat, conversations: renderConversations, tasks: renderTasks, projects: renderProjects, agents: renderAgents, memory: renderMemory, knowledge: renderKnowledge, files: renderFiles, tools: renderTools, permissions: renderPermissions, approvals: renderApprovals, security: renderSecurity, evidence: renderEvidence, guardian: renderGuardian, audit: renderAudit, ldmarket: renderLDMarket, events: renderEvents, lotto: renderLotto, rewards: renderRewards, plans: renderPlans, devices: renderDevices, ldcoins: renderLD, status: renderStatus, settings: renderSettings, puter: renderPuter, avatar: renderAvatarStudio, arena: renderArena, spec: renderSpec, documentation: renderDocs, profile: renderProfile, marketplace: renderMarket, automations: renderAutomations, notifications: renderNotifications, inventory: renderInventory })[id]();
+  ({ chat: renderChat, conversations: renderConversations, tasks: renderTasks, projects: renderProjects, agents: renderAgents, memory: renderMemory, knowledge: renderKnowledge, files: renderFiles, tools: renderTools, permissions: renderPermissions, approvals: renderApprovals, security: renderSecurity, evidence: renderEvidence, guardian: renderGuardian, audit: renderAudit, credentials: renderCredentials, ldmarket: renderLDMarket, events: renderEvents, lotto: renderLotto, rewards: renderRewards, plans: renderPlans, devices: renderDevices, ldcoins: renderLD, status: renderStatus, settings: renderSettings, puter: renderPuter, avatar: renderAvatarStudio, arena: renderArena, spec: renderSpec, documentation: renderDocs, profile: renderProfile, marketplace: renderMarket, automations: renderAutomations, notifications: renderNotifications, inventory: renderInventory })[id]();
 }
 function head(eyebrow, title, sub, right) {
   return `<div class="page-head"><div><p class="eyebrow">${eyebrow}</p><h1>${esc(title)}</h1><p class="page-sub">${esc(sub)}</p></div>${right || ''}</div>`;
@@ -554,7 +555,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.75.1'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.76.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -717,6 +718,56 @@ async function renderLDMarket() {
   };
   $('#ldBuy').onclick = () => order('buy');
   $('#ldSell').onclick = () => order('sell');
+}
+/* ══ v1.76: credentials surface — keys with their developer-portal guides ══ */
+const CRED_CATALOG = [
+  { g: 'AI BRAIN', id: 'groq', name: 'Groq', portal: 'console.groq.com/keys', portalUrl: 'https://console.groq.com/keys', steps: 'Sign up (free, no card) → API Keys → Create API Key. OpenAI-compatible endpoint; the free tier is roughly 30 req/min, 14,400 req/day.', ph: 'gsk_…' },
+  { g: 'AI BRAIN', id: 'gemini', name: 'Google AI Studio (Gemini)', portal: 'aistudio.google.com/apikey', portalUrl: 'https://aistudio.google.com/apikey', steps: 'Sign in with a Google account → Get API key → Create API key. Free tier, no card (rate-limited per model).', ph: 'AIza…' },
+  { g: 'AI BRAIN', id: 'openrouter', name: 'OpenRouter', portal: 'openrouter.ai/keys', portalUrl: 'https://openrouter.ai/keys', steps: 'Sign in → Keys → Create key. One key reaches 400+ models; “:free”-tagged models cost nothing, paid models bill per token.', ph: 'sk-or-v1-…' },
+  { g: 'AI BRAIN', id: 'deepseek', name: 'DeepSeek', portal: 'platform.deepseek.com', portalUrl: 'https://platform.deepseek.com/api_keys', steps: 'Sign up → API keys → Create new secret key. Free credit grant on signup, then pay-as-you-go.', ph: 'sk-…' },
+  { g: 'AI BRAIN', id: 'mistral', name: 'Mistral', portal: 'console.mistral.ai/api-keys', portalUrl: 'https://console.mistral.ai/api-keys', steps: 'Sign up → API keys → Create new key. The “experiment” plan is a free tier.', ph: '…' },
+  { g: 'SOCIAL', id: 'x', name: 'X (Twitter)', portal: 'console.x.com', portalUrl: 'https://console.x.com', steps: 'Sign in → create a project/app → copy the Bearer Token. 2026 truth: no free tier for new developers — pay-per-use credits must be loaded first (≈$0.015 per post, ≈$0.005 per read).', ph: 'Bearer AAAA…', risk: 'Posting is HIGH RISK → approval-gated' },
+  { g: 'SOCIAL', id: 'facebook', name: 'Facebook (Graph API)', portal: 'developers.facebook.com', portalUrl: 'https://developers.facebook.com', steps: 'Create app → Tools → Graph API Explorer → Get Token → Page Access Token with pages_manage_posts. Page posting only, high-risk, approval-gated.', ph: 'EAA…', risk: 'Posting is HIGH RISK → approval-gated' },
+  { g: 'SOCIAL', id: 'reddit', name: 'Reddit', portal: 'reddit.com/prefs/apps', portalUrl: 'https://www.reddit.com/prefs/apps', steps: 'Prefs → apps → “create another app…” (type: script) → combine as client_id:client_secret. Submission is high-risk, approval-gated.', ph: 'client_id:client_secret', risk: 'Posting is HIGH RISK → approval-gated' },
+  { g: 'SOCIAL', id: 'instagram', name: 'Instagram (Business)', portal: 'developers.facebook.com', portalUrl: 'https://developers.facebook.com', steps: 'Meta app → add the Instagram product → generate token. Requires a Business/Creator account linked to a Facebook Page. This connector verifies identity only.', ph: 'EAA… / IGAA…', risk: 'Verify-only connector' },
+  { g: 'SOCIAL', id: 'linkedin', name: 'LinkedIn', portal: 'linkedin.com/developers', portalUrl: 'https://www.linkedin.com/developers/apps', steps: 'Create app → request the Sign In / Share products → OAuth 2.0 member token. This connector verifies identity only.', ph: 'AQX… / AQY…', risk: 'Verify-only connector' },
+  { g: 'SOCIAL', id: 'tiktok', name: 'TikTok', portal: 'developers.tiktok.com', portalUrl: 'https://developers.tiktok.com', steps: 'Create app → manage apps → client key + secret as key:secret. This connector verifies identity only.', ph: 'client_key:client_secret', risk: 'Verify-only connector' },
+  { g: 'CORE', id: 'github', name: 'GitHub', portal: 'github.com/settings/tokens', portalUrl: 'https://github.com/settings/tokens', steps: 'Settings → Developer settings → Personal access tokens → fine-grained PAT with Contents read/write on doomed689/WitForge. Unlocks real repo reads and approval-gated writes.', ph: 'github_pat_…' },
+  { g: 'CORE', id: 'stripe', name: 'Stripe', portal: 'dashboard.stripe.com/apikeys', portalUrl: 'https://dashboard.stripe.com/apikeys', steps: 'Developers → API keys → a restricted key (rk_…) is recommended — least privilege. Verification + evidence only: real money stays compliance-locked (Charter art. IV).', ph: 'rk_live_… / sk_…' }
+];
+async function renderCredentials() {
+  const j = await api('/api/credentials');
+  const stored = new Set((j.credentials || []).map(c => c.service));
+  const adState = {}; (j.adapters || []).forEach(a => { adState[a.id] = String(a.state || ''); });
+  const pill = c => !stored.has(c.id) ? '<span class="pill disconnected">NO KEY</span>'
+    : adState[c.id].startsWith('VERIFIED') ? '<span class="pill operational">VERIFIED</span>'
+    : '<span class="pill config">KEY STORED · unverified</span>';
+  const card = c => `<div class="facet-card"><h4>🔑 ${esc(c.name)} <small>[${c.id}]</small> ${pill(c)}</h4>
+     <p class="empty-note">${esc(c.steps)} → <a href="${c.portalUrl}" target="_blank" rel="noopener">${esc(c.portal)} ↗</a>${c.risk ? ' · <b>' + esc(c.risk) + '</b>' : ''}</p>
+     <div class="input-line" style="margin-top:8px"><input type="password" id="cr-${c.id}" placeholder="${esc(c.ph)}" autocomplete="off" style="flex:1;min-width:180px"><button class="mini-btn" data-cr-act="connect" data-cr="${c.id}">Connect</button><button class="mini-btn" data-cr-act="verify" data-cr="${c.id}" ${stored.has(c.id) ? '' : 'disabled'}>Verify</button><button class="mini-btn danger" data-cr-act="revoke" data-cr="${c.id}" ${stored.has(c.id) ? '' : 'disabled'}>Revoke</button></div>
+     <div class="empty-note" id="cr-out-${c.id}" style="margin-top:6px"></div></div>`;
+  $('#main').innerHTML = head('CREDENTIALS', 'Credentials — connections & API keys', 'Keys are stored AES-256-GCM encrypted on this server, are never returned by any API, and are sent only to the service they belong to. Connecting proves nothing — Verify proves it with a real round trip and recorded evidence.', `<span class="pill operational">${stored.size} stored</span>`) +
+    `<div class="facet-card"><h4>Charter art. III §3 — informed consent</h4><p class="empty-note">Every key here is owner-granted and revocable in one click (“disconnect &lt;id&gt;” also works in Chat, as do “connect &lt;id&gt; with token &lt;key&gt;” and “verify &lt;id&gt;”). Ollama needs no key: install it and “ollama pull llama3.2”.</p></div>` +
+    ['AI BRAIN', 'SOCIAL', 'CORE'].map(g => `<h4 style="margin:18px 0 8px">${g}</h4>` + CRED_CATALOG.filter(c => c.g === g).map(card).join('')).join('');
+  $('#main').onclick = async e => {
+    const b = e.target.closest('[data-cr-act]'); if (!b) return;
+    const id = b.dataset.cr, act = b.dataset.crAct, out = document.getElementById('cr-out-' + id);
+    if (act === 'connect') {
+      const inp = document.getElementById('cr-' + id), tok = (inp.value || '').trim();
+      if (!tok) { if (out) out.textContent = 'Paste the key into the field first.'; return; }
+      const r = await api('/api/credentials', { method: 'POST', body: { id, token: tok } });
+      inp.value = ''; toast(r.ok ? 'Key stored (encrypted): ' + id : (r.error || 'failed'));
+      setView('credentials', { silent: true });
+    } else if (act === 'verify') {
+      if (out) out.textContent = 'Verifying with a real API round trip…';
+      const r = await api('/api/command', { method: 'POST', body: { text: 'verify ' + id } });
+      if (out) out.textContent = (r.reply || r.error || 'no reply');
+    } else if (act === 'revoke') {
+      const r = await api('/api/credentials', { method: 'POST', body: { id, revoke: true } });
+      toast(r.ok ? 'Credential destroyed: ' + id : (r.error || 'failed'));
+      setView('credentials', { silent: true });
+    }
+  };
 }
 async function renderPlans() {
   const j = await api('/api/plans');
@@ -1257,7 +1308,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.75.1 · 176-REQUIREMENT COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.76.0 · 176-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();
