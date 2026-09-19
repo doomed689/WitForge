@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.71.0';
+const VERSION = '1.72.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -1274,6 +1274,35 @@ async function command(text) {
   if ((m = low.match(/^connect (proton)(?: .*)?$/)) || low === 'connect proton') {
     return R('Proton publishes NO public payment/wallet merchant API, so a real integration cannot exist. I will not simulate one. Proton connector state stays “NO PUBLIC API”. For receiving real payments, use Stripe: “connect stripe with token sk_…”, then “verify stripe”.');
   }
+  /* v1.72: one-glance operational briefing (all local state, instant). */
+  if (low === 'briefing' || low === 'brief' || low === 'standup') {
+    const steps = (S.humanSteps || []).filter(h => h.status === 'pending');
+    const props = (S.proposals || []).filter(p2 => p2.status === 'proposed');
+    const pend = S.approvals.filter(a => a.status === 'pending');
+    const expired = Object.keys(S.permissions).filter(k2 => capabilityState(k2) === 'EXPIRED');
+    const localModels = (await llm.ollamaModels({ localFetch: llmLocalFetch })) || [];
+    const L2 = ['📋 Briefing — ' + new Date().toLocaleString() + ' (v' + VERSION + ')',
+      'Emergency: ' + S.emergency + ' · economy: ' + (S.economy.realMode ? 'REAL' : 'SIMULATION') + ' · AI default: ' + ((S.llm && S.llm.default) || 'auto (first configured)') + ' · local models: ' + localModels.length];
+    L2.push('Human steps pending: ' + steps.length + (steps.length ? ' → ' + steps.map(h => h.id + ' (' + h.kind + ')').join(', ') : ''));
+    L2.push('AI proposals pending: ' + props.length + (props.length ? ' → ' + props.map(p2 => p2.id + ' “' + p2.command + '”').join(', ') : ''));
+    L2.push('Approvals pending: ' + pend.length + (pend.length ? ' → ' + pend.map(a => a.id + ' (' + a.desc + ')').join(', ') : ''));
+    L2.push('Capabilities expired: ' + expired.length + (expired.length ? ' → ' + expired.join(', ') + ' (auto-refresh on next use)' : ''));
+    L2.push('Say “update check” for release status · “help” for everything runnable.');
+    return R(L2.join('\n'));
+  }
+  /* v1.72: ask about <url> — fetch a public page, summarize with the brain. */
+  if ((m = q.match(/^ask about\s+(https?:\/\/\S+)$/i)) || (m = q.match(/^summarize\s+(https?:\/\/\S+)$/i))) {
+    const url = m[1];
+    const page = await runTool('http.get', { url }, {});
+    if (!page.ok) return R('Could not fetch ' + url + ' — ' + (page.evidence && (page.evidence.blocked || page.evidence.error) ? String(page.evidence.blocked || page.evidence.error) : String(page.error || 'fetch failed')) + '. Only public http(s) pages can be read (private addresses are blocked by the SSRF guard).');
+    const body = String(page.evidence.text || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 6000);
+    const r = await runTool('llm.chat', { prompt: 'Summarize this web page in at most 120 words, then one line “key facts:” with 2-3 bullets.\n\nURL: ' + url + '\n\n' + body, maxTokens: 300 }, {});
+    if (!r.ok) return R('Fetched the page but the AI brain could not summarize: ' + (r.error || 'no provider configured. Say “connect groq with token <key>” or use a local model.'));
+    return R('📖 [' + r.result.provider + ' · ' + r.result.model + '] ' + url + '\n' + r.result.reply + '\n— fetched live via the SSRF-guarded reader; the model only saw the page text.');
+  }
+  if ((m = q.match(/^ask about\s+(.+)$/i)) || (m = q.match(/^summarize\s+(.+)$/i))) {
+    return R('That does not look like a full public URL, so I will not fetch it. Give me a complete http(s) address to fetch — for example “ask about https://en.wikipedia.org/wiki/Double-entry_bookkeeping”. Private addresses are refused by the SSRF guard.');
+  }
   /* v1.71: the AI proposes, the owner disposes. */
   if ((m = q.match(/^propose\s+([\s\S]+)$/i)) || (m = q.match(/^ask propose\s+([\s\S]+)$/i))) {
     const r = await runTool('llm.chat', { prompt: m[1] }, {});
@@ -1959,7 +1988,17 @@ async function chatFallback(text) {
   const q0 = String(text || '').trim();
   if (!q0) return null;
   const r = await runTool('llm.chat', { prompt: q0 }, {});
-  if (r.ok) return { ok: true, kind: 'ai', provider: r.result.provider, model: r.result.model, reply: '🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + r.result.reply + '\n— external model, advisory only; commands run through the audited router.' };
+  if (r.ok) {
+    let text = String(r.result.reply || '');
+    const sug = text.match(/^SUGGEST:\s*(.+)$/mi);
+    let suffix = '\n— external model, advisory only; commands run through the audited router.';
+    if (sug) {
+      text = text.replace(/^SUGGEST:\s*.+$/mi, '').trim();
+      const pr = createProposal(sug[1], 'ai-fallback', null);
+      suffix = '\n\n📋 Proposed command: “' + pr.command + '” — say “do ' + pr.id + '” to run it (permissions and approvals still apply).';
+    }
+    return { ok: true, kind: 'ai', provider: r.result.provider, model: r.result.model, reply: '🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + text + suffix };
+  }
   return {
     ok: false, kind: 'ai-unconfigured',
     reply: 'I have no rule-based intent for “' + q0.slice(0, 80) + '” and no AI provider is connected, so I will not guess. Free options:\n' +
@@ -2836,7 +2875,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“propose <question>” · “do <id>” — the AI proposes a command, you run it (§168)', '“local models” · “local pull qwen2.5:0.5b” — manage your own AI models from chat', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“propose <question>” · “do <id>” — the AI proposes a command, you run it (§168)', '“local models” · “local pull qwen2.5:0.5b” — manage your own AI models from chat', '“briefing” — one-glance status: steps, proposals, approvals, capabilities, modes', '“ask about <url>” — fetch a public page and summarize it with the brain', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },

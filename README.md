@@ -1,4 +1,4 @@
-# LIAM · v1.71 — the AI proposes, you dispose (§168, executable)
+# LIAM · v1.72 — briefing, ask-about-URL, fallback proposals
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,27 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 154 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM ensemble/consensus/proposals, local model management, plans/LD packages/social/self-update |
+| `platform-test.js` | 158 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM ensemble/consensus/proposals, briefing, ask-about-URL, local model management, plans/LD packages/social/self-update |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
 | `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
 `node analysis/gap-scan.js` → **89/89 probed requirements present**.
+
+## v1.72 — briefing, ask about <url>, fallback proposals
+
+- `briefing` — one command, whole picture: emergency/economy/AI state, local
+  model count, pending human steps, pending AI proposals, pending approvals
+  and expired capabilities (with their ids, so the next `do`/`resolve`/
+  `approve` is copy-paste away). All local state — instant.
+- `ask about <url>` (or `summarize <url>`) — fetches a public page through
+  the SSRF-guarded reader and has the brain summarize it (≤120 words + key
+  facts), labelled with provider·model and the source. Private addresses are
+  refused by the guard; only public http(s) pages are read.
+- Fallback chat now participates in §168: if the brain answers an unmatched
+  command with a `SUGGEST:` line, it becomes a *proposal* (visible in the
+  Approvals workspace and to `briefing`) — never an execution.
 
 ## v1.71 — propose/do: AI proposes, the owner disposes
 

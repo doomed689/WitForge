@@ -88,7 +88,7 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       conversations: s.conversations, tasks: s.tasks, projects: s.projects, agents: s.agents,
       memory: s.memory, knowledge: s.knowledge, audit: s.audit, permissions: s.permissions,
-      approvals: s.approvals, humanSteps: (s.humanSteps || []).slice(0, 50), emergency: s.emergency, ledger: s.ledger,
+      approvals: s.approvals, humanSteps: (s.humanSteps || []).slice(0, 50), proposals: (s.proposals || []).slice(0, 30), emergency: s.emergency, ledger: s.ledger,
       reminders: s.reminders, schedules: s.schedules, notifications: s.notifications.slice(0, 30),
       avatars: arena.list(), talentTree: arena.TALENTS,
       adapters: P.adaptersLive().map(a => ({ id: a.id, name: a.name, state: a.state, caps: a.caps })),
