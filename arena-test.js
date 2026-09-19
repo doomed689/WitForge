@@ -88,5 +88,17 @@ fs.rmSync(tmp, { recursive: true, force: true });
   ok(after1 === after2, 'repeat derived() calls are stable (idempotent)');
   ok(eng3.get(t1.avatar.id).talents.length === 2, 'public avatar reports talents');
 }
+/* ── v1.79.1: arena store durability — atomic writes + corrupt-primary recovery ── */
+{
+  const af = path.join(os.tmpdir(), 'liam-arena-dur-' + Date.now() + '.json');
+  const e1 = freshEngine(af);
+  e1.createAvatar('durability-probe', 'nord');                    // persist() runs on creation
+  freshEngine(af);                                                // reload of a good store snapshots .bak
+  ok(fs.existsSync(af + '.bak') && !fs.existsSync(af + '.tmp'), 'arena store snapshots travel with it; saves leave zero tmp residue');
+  fs.writeFileSync(af, 'GARBAGE{{{');
+  const e3 = freshEngine(af);
+  ok(e3.list().some(a => a.name === 'durability-probe'), 'corrupted arena primary recovers from the snapshot — avatars survive, never a silent wipe');
+  for (const f of [af, af + '.bak', af + '.tmp']) { try { fs.rmSync(f, { force: true }); } catch (e) {} }
+}
 console.log(`${checks} arena checks completed, ${fails} failures.`);
 process.exit(fails ? 1 : 0);

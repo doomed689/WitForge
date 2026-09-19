@@ -1,6 +1,6 @@
 {
   "name": "witforge",
-  "version": "1.79.0",
+  "version": "1.79.2",
   "description": "WitForge — a local-first, security-first conversational AI operating platform (browser control surface + authoritative local server).",
   "keywords": ["local-first", "permissions", "audit", "orchestration", "arena"],
   "license": "UNLICENSED",
@@ -21,6 +21,7 @@
     "test:arena": "node arena-test.js",
     "test:engagement": "node engagement-test.js",
     "test:smoke": "node smoke-test.js",
+    "recover": "node recovery.js",
     "selftest": "node -e \"const P=require('./platform.js');const r=P.selftestAll();console.log(JSON.stringify(r.counts,null,2));process.exit(r.counts.FAIL?1:0)\"",
     "health": "node -e \"const http=require('http');const port=process.env.PORT||8787;http.get({host:'127.0.0.1',port,path:'/api/health'},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{console.log(d);process.exit(r.statusCode===200?0:1)})}).on('error',e=>{console.error('health check failed: '+e.message);process.exit(1)})\""
   },

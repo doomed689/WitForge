@@ -492,6 +492,21 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   delete require.cache[require.resolve('./platform.js')]; const P3 = require('./platform.js');
   ok(P3.decryptToken('stripe') === 'sk-bak-probe', 'a corrupted primary store recovers from the .bak snapshot — data loss refused, not just unlikely');
 
+  /* ── v1.79.1: anchored audit window + recovery console ── */
+  for (let i = 0; i < 605; i++) P3.audit('probe', 'chain rotation probe ' + i, 'system');
+  const vA = P3.verifyAudit();
+  ok(vA.ok && vA.entries === 600 && vA.retainedFromAnchor === true, 'bounded 600-entry audit stays fully verifiable through retention rotation via chain anchors');
+  P3.state.audit[300].detail = 'EVIL EDIT — tamper probe';   // in-memory only: the file is NOT touched, or the console check below would go red
+  const vB = P3.verifyAudit();
+  ok(!vB.ok && vB.brokenAt !== undefined, 'a forged entry inside the retained window is caught, never silently absorbed by the anchor');
+  const recv = require('./recovery.js');
+  const healthy = recv.checkStore(sfile);
+  ok(healthy.primary === 'VALID' && healthy.chain === true && healthy.vault.creds.stripe === 'DECRYPTS' && healthy.ok === true && healthy.verdict === 'HEALTHY', 'recovery console grades the booted store: primary valid, chain verifies, vault decrypts — never prints a secret');
+  fs.writeFileSync(path.join(tmp, 'corrupt.json'), 'GARBAGE{{{');
+  fs.copyFileSync(sfile + '.bak', path.join(tmp, 'corrupt.json.bak'));
+  const rc = recv.checkStore(path.join(tmp, 'corrupt.json'));
+  ok(rc.primary === 'CORRUPT' && rc.effective === 'BACKUP' && rc.ok === true && /replace the damaged primary/.test(rc.verdict), 'recovery console grades a corrupted primary as HEALTHY-VIA-BACKUP with the repair instruction');
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');
   process.exit(fails ? 1 : 0);

@@ -23,6 +23,20 @@ passing tests:
    marked ARCHIVED (provenance, never re-runnable); `gap-scan.js` remains
    a live gate instrument.
 
+**v1.79.1 (same day, additive-only):** two follow-throughs found while
+operating on the above — ① **audit retention anchoring**: the audit log is
+bounded to 600 entries by design (Data Retention Policy), but dropping the
+oldest halves silently broke `verifyAudit` once the cap fired; the retained
+window now starts from a **chain anchor** to the dropped history, so a
+forged entry inside the window is still caught while rotation is provably
+verifiable (proved with 605 forced rotations + a tamper probe);
+② **`recovery.js` console + `npm run recover`** — a read-only, zero-mutation
+health grader for every persisted store (primary/.bak/effective, anchor-aware
+chain verification, vault key perms + per-credential `DECRYPTS|FAIL` —
+secrets never printed), library-importable for tests (it is: 2 assertions
+inside platform-test). Arena-store durability is now **test-proven**, not
+just code-reviewed: same GARBAGE-over-primary drill, avatars survive.
+
 **v1.78:** chat with a connected AI brain now turns everyday conversation
 
 **v1.78:** chat with a connected AI brain now turns everyday conversation

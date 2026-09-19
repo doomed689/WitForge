@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.79.0';
+const VERSION = '1.79.2';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -180,7 +180,16 @@ function audit(type, detail, actor, fields) {
   e.ts = e.ts;
   e.hash = crypto.createHash('sha256').update(prev + '|' + e.ts + '|' + e.type + '|' + e.detail + '|' + e.actor).digest('hex');
   S.audit.unshift(e);
-  if (S.audit.length > 600) S.audit.length = 600;
+  if (S.audit.length > 600) {
+    /* v1.79.1: retention is bounded BY DESIGN (600, Data Retention Policy) —
+     * but dropping the oldest entries must never break verifiability of what
+     * remains. The new oldest entry carries a chain anchor to the dropped
+     * history, so verifyAudit() still proves the retained window end to end.
+     * The anchor sits OUTSIDE the hashed fields — history is only pointed
+     * to, never altered. */
+    if (S.audit[599] && S.audit[600]) S.audit[599].chainAnchor = S.audit[600].hash;
+    S.audit.length = 600;
+  }
   save();
   return e;
 }
@@ -193,14 +202,18 @@ function maskSecrets(text) {
     .replace(/((?:token|password|secret|api[_-]?key)"?\s*[:=]\s*"?)([^"\s,}]{4})[^"\s,}]*/gi, '$1$2…[masked]');
 }
 function verifyAudit() {
-  let prev = 'GENESIS';
-  for (let i = S.audit.length - 1; i >= 0; i--) {
+  const oldest = S.audit.length - 1;
+  /* v1.79.1: after retention rotation the window starts at a chain anchor —
+   * the dropped history's last hash — instead of GENESIS. A forged entry
+   * inside the window still breaks verification; rotation does not. */
+  let prev = (oldest >= 0 && S.audit[oldest].chainAnchor) ? S.audit[oldest].chainAnchor : 'GENESIS';
+  for (let i = oldest; i >= 0; i--) {
     const e = S.audit[i];
     const h = crypto.createHash('sha256').update(prev + '|' + e.ts + '|' + e.type + '|' + e.detail + '|' + e.actor).digest('hex');
     if (h !== e.hash) return { ok: false, brokenAt: e.ts };
     prev = e.hash;
   }
-  return { ok: true, entries: S.audit.length };
+  return { ok: true, entries: S.audit.length, retainedFromAnchor: oldest >= 0 && !!S.audit[oldest].chainAnchor };
 }
 
 /* ── Emergency / security ─────────────────────────────── */
@@ -2156,6 +2169,7 @@ function vaultSecret() {
   } catch (e) { /* first boot or migration — generated below */ }
   VAULT_SECRET = crypto.randomBytes(32).toString('hex');
   fs.writeFileSync(VAULT_KEY_FILE, VAULT_SECRET, { mode: 0o600 });
+  try { fs.chmodSync(VAULT_KEY_FILE, 0o600); } catch (e) { /* explicit mode on top of create-mode — umasks and restore layers are not trusted to keep it */ }
   return VAULT_SECRET;
 }
 function credKey() { return crypto.createHash('sha256').update(vaultSecret()).digest(); }
