@@ -1,4 +1,4 @@
-# LIAM · v1.66 — human-in-the-loop gates + a fixed chat rail
+# LIAM · v1.67 — a multi-provider AI brain for Chat (free tiers + local Ollama)
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,46 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 106 | ledger, SSRF, sandbox, allow-list, approvals, router, human-in-the-loop steps |
+| `platform-test.js` | 124 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM provider layer |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
 | `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
 `node analysis/gap-scan.js` → **84/84 probed requirements present**.
+
+## v1.67 — Chat gets a brain: six LLM providers, free-first, truth-stated
+
+Chat was a pure rule router; unmatched asks dead-ended. Now the platform has
+a real AI layer (`llm.js`) with six providers behind one interface:
+
+| Provider | Key | Free tier |
+|---|---|---|
+| `groq` | free, no card | ~30 req/min, 14,400/day (Llama 3.3 70B) |
+| `gemini` | free, no card | Google AI Studio free tier |
+| `openrouter` | free | `:free`-tagged models |
+| `deepseek` | free grant | on signup |
+| `mistral` | free tier | experiment plan |
+| `ollama` | **no key** | fully local open-source models on 127.0.0.1:11434 |
+
+**Use it:** `connect groq with token <your-free-key>` then `verify groq`, and
+ask anything: `ask explain what LD is` → the reply is labelled
+`🤖 [provider · model]` so the rule engine and the AI are never confused.
+`ai provider <id>` picks the default (deterministic fallback order:
+groq → gemini → openrouter → deepseek → mistral → ollama). When no rule
+intent matches, the connected brain answers automatically; with nothing
+connected the reply lists every free option with the exact connect command —
+it never guesses and never pretends.
+
+**Truth and safety rules kept:** a missing key is `UNAVAILABLE` with the
+free-key path, never faked; keys travel in headers (never URLs) and are
+masked in audit; the AI answers and advises but never executes — commands
+still run through the audited router; Ollama is the only loopback traffic,
+validated to `127.0.0.1:11434` and nothing else (not a general SSRF
+exemption). Tools: `llm.status` / `llm.chat` / `llm.verify`; HTTP: the same
+through `/api/command` and the fallback path. 18 new platform checks cover
+wire formats (dry), truthful errors, loopback validation and a full local
+round trip against a live local endpoint.
 
 ## v1.66 — human gates belong to the human (and the chat rail actually answers)
 

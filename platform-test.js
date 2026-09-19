@@ -132,7 +132,7 @@ const run = (t, a) => P.runTool(t, a || {}, {});
 
   /* spec coverage + selftest */
   const comp = P.compliance();
-  ok(comp.total === 170, 'spec registry has 170 requirements (168 master + 2 platform)');
+  ok(comp.total === 171, 'spec registry has 171 requirements (168 master + 3 platform)');
   const stt = P.selftestAll();
   /* §126: four truthful states — no FAIL is required; WARNING/NOT_TESTED are
    * honest statements about integrations that genuinely are not connected. */
@@ -280,6 +280,50 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(cancel.ok && cancel.step.status === 'cancelled', 'a pending step can be cancelled');
   ok((await P.command('human steps')).ok, 'chat lists human steps');
   ok(P.command('resolve ' + hitl5.needsHuman + ' with x').ok === true || P.state.humanSteps.find(h => h.id === hitl5.needsHuman).status === 'cancelled', 'chat resolve on a cancelled step reports honestly without crashing');
+
+  /* ── v1.67: multi-provider LLM layer — dry shapes, truthful errors,
+   * and a full local round trip against a fake Ollama on 11434 ── */
+  const llmMod = require('./llm.js');
+  ok(llmMod.PROVIDERS.length === 6 && llmMod.PROVIDER_IDS.includes('ollama'), 'LLM registry carries all six providers');
+  ok(llmMod.PROVIDERS.filter(p => !p.requiresKey).length === 1, 'Ollama is the only key-free provider');
+  const d1 = llmMod.dryRun('groq', { prompt: 'hi' });
+  ok(d1.url.includes('groq.com') && d1.body.model === 'llama-3.3-70b-versatile' && d1.body.messages[0].role === 'system' && d1.body.max_tokens === 400, 'openai-shape request is well formed');
+  const d2 = llmMod.dryRun('gemini', { prompt: 'hi' });
+  ok(/:generateContent$/.test(d2.url) && d2.body.contents[0].parts[0].text === 'hi' && d2.headers['x-goog-api-key'] === '<redacted-key>', 'gemini-shape request is well formed; key stays in a header, never the URL');
+  ok(!!llmMod.dryRun('groq', {}).error, 'an empty ask is rejected before any network call');
+  const gd = llmMod.dryRun('groq', { prompt: 'x' });
+  ok(gd.body.messages.length === 2 && gd.body.messages[1].content === 'x', 'system prompt + user message ordering');
+  ok(llmMod.validateLocalUrl('http://127.0.0.1:11434/api/chat').ok === true, 'local model endpoint: loopback 11434 allowed');
+  ok(!!llmMod.validateLocalUrl('http://10.0.0.5:11434/api/chat').error, 'local model endpoint: private LAN rejected');
+  ok(!!llmMod.validateLocalUrl('http://127.0.0.1:9999/api/chat').error, 'local model endpoint: non-Ollama port rejected');
+  ok(!!llmMod.validateLocalUrl('https://example.com/api/chat').error, 'local model endpoint: remote host rejected');
+  const lst = await P.runTool('llm.status', {}, {});
+  ok(lst.result.providers.length === 6 && lst.result.providers.find(x => x.id === 'groq').configured === false, 'status reports unconfigured providers truthfully');
+  const nokey = await P.runTool('llm.chat', { prompt: 'hello', provider: 'groq' }, {});
+  ok(nokey.ok === false && /connect groq with token/.test(nokey.error), 'chat without a key reports UNAVAILABLE with the exact connect command');
+  const unk = await P.runTool('llm.chat', { prompt: 'x', provider: 'nope' }, {});
+  ok(unk.ok === false && /Unknown provider/.test(unk.error), 'unknown provider is rejected');
+  const httpMod = require('http');
+  const fake = httpMod.createServer((rq, rs) => {
+    let b = ''; rq.on('data', c => { b += c; }); rq.on('end', () => {
+      rs.setHeader('content-type', 'application/json');
+      if (rq.url === '/api/tags') { rs.end(JSON.stringify({ models: [{ name: 'llama3.2:latest' }] })); return; }
+      let last = ''; try { const j = JSON.parse(b); last = (j.messages || []).slice(-1)[0].content || ''; } catch (e) {}
+      rs.end(JSON.stringify({ model: 'llama3.2', message: { role: 'assistant', content: 'local echo: ' + last.slice(0, 30) } }));
+    });
+  });
+  await new Promise(res => fake.listen(11434, '127.0.0.1', res));
+  const loc = await P.runTool('llm.chat', { prompt: 'ping local' }, {});
+  ok(loc.ok && loc.result.provider === 'ollama' && /local echo: ping local/.test(loc.result.reply), 'local Ollama round trip works through the validated loopback path (default fallback with zero keys)');
+  const ver = await P.runTool('llm.verify', { provider: 'ollama' }, {});
+  ok(ver.ok && ver.evidence.verified === true && ver.evidence.provider === 'ollama', 'llm.verify performs a real minimal round trip');
+  const lst2 = await P.runTool('llm.status', {}, {});
+  ok(lst2.result.providers.find(x => x.id === 'ollama').models && lst2.result.providers.find(x => x.id === 'ollama').models.length === 1, 'status lists installed local models from /api/tags');
+  const askCmd = await P.command('ask what can you do');
+  ok(askCmd && askCmd.ok && /\[ollama · /.test(askCmd.reply), 'chat “ask” routes through the LLM with a labelled provider·model reply');
+  const fb = await P.chatFallback('what is 2+2?');
+  ok(fb && fb.ok === true && fb.kind === 'ai' && fb.provider === 'ollama', 'chatFallback answers through the LLM when one is configured');
+  fake.close();
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(checks + ' platform checks completed, ' + fails + ' failures.');

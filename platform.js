@@ -16,8 +16,9 @@ const ownerSec = require('./owner-security.js');
 const caps = require('./capabilities.js');
 const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
+const llm = require('./llm.js');
 
-const VERSION = '1.66.0';
+const VERSION = '1.67.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -41,6 +42,7 @@ function freshState() {
     ledger: { accounts: { Owner: 1000, Treasury: 0, 'Arena Escrow': 0, 'Forge Sink': 0, 'Marketplace Sink': 0, 'LD Issuance': 1000000 }, tx: [] },
     economy: { realMode: false, stripeAccount: null, credited: {} }, market: [],
     reminders: [], notifications: [], schedules: [],
+    llm: { default: null, calls: 0 },   // v1.67 AI brain config (provider keys live encrypted in creds)
     /* ── v1.64 specification systems ───────────────────────────── */
     stops: {},                       // §55 emergency stop scopes
     devices: [],                     // §40/§104 device trust + inventory
@@ -152,6 +154,7 @@ function maskSecrets(text) {
   return String(text === undefined || text === null ? '' : text)
     .replace(/(sk_[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/g, '$1…[masked]')
     .replace(/(ghp_[A-Za-z0-9]{4})[A-Za-z0-9]+/g, '$1…[masked]')
+    .replace(/((?:gsk_|sk-or-|sk-|AIza)[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+/g, '$1…[masked]')
     .replace(/((?:token|password|secret|api[_-]?key)"?\s*[:=]\s*"?)([^"\s,}]{4})[^"\s,}]*/gi, '$1$2…[masked]');
 }
 function verifyAudit() {
@@ -359,12 +362,53 @@ function cancelHumanStep(id) {
   return { ok: true, step: hs };
 }
 
+/* ── v1.67: multi-provider AI brain (llm.js) ────────────────────────────
+ * Cloud providers ride guardedFetch (public internet only, keys in
+ * headers, masked in audit). Ollama is the single local provider and the
+ * only traffic allowed to loopback — validated by llm.validateLocalUrl,
+ * never a general SSRF exemption. A provider without a credential is
+ * reported UNAVAILABLE with the exact free-key path; never faked. */
+const llmLocalFetch = async (url, headers, opts) => {
+  const v = llm.validateLocalUrl(url);
+  if (v.error) { audit('security', 'LOCAL-LLM BLOCKED ' + url, 'system', { result: 'BLOCKED', reason: v.error }); return { ok: false, error: v.error, blocked: 'local-llm' }; }
+  const http = require('http');
+  return await new Promise(resolve => {
+    const rq = http.request(v.url, { method: opts.method || 'GET', headers: Object.assign({ 'content-type': 'application/json' }, headers || {}) }, rs => {
+      let text = ''; rs.on('data', c => { text += c; if (text.length > 400000) rq.destroy(); });
+      rs.on('end', () => resolve({ ok: rs.statusCode >= 200 && rs.statusCode < 300, status: rs.statusCode, text: text.slice(0, 400000) }));
+    });
+    rq.on('error', e => resolve({ ok: false, error: e.code === 'ECONNREFUSED' ? 'Ollama is not reachable on 127.0.0.1:11434 — install it, "ollama serve", then "ollama pull ' + llm.providerById('ollama').defaultModel + '"' : e.message }));
+    rq.setTimeout(opts.timeoutMs || 120000, () => { rq.destroy(new Error('timeout')); });
+    if (opts.body) rq.write(opts.body);
+    rq.end();
+  });
+};
+function llmResolveProvider(requested) {
+  if (requested) {
+    const p = llm.providerById(String(requested));
+    if (!p) return { error: 'Unknown provider ' + requested + ' — known: ' + llm.PROVIDER_IDS.join(', ') };
+    if (p.requiresKey && !decryptToken(p.id)) return { error: p.name + ' UNAVAILABLE — no credential stored (never faked). Get a free key, then say “' + p.connect + '”.', truthful: true };
+    return p;
+  }
+  const order = [];
+  if (S.llm && S.llm.default) order.push(S.llm.default);
+  llm.DEFAULT_ORDER.forEach(id => { if (!order.includes(id)) order.push(id); });
+  for (const id of order) { const p = llm.providerById(id); if (p && (!p.requiresKey || decryptToken(p.id))) return p; }
+  return null;
+}
+
 /* ── Adapters & tools: real execution only ────────────── */
 const ADAPTERS = [
   { id: 'sys', name: 'System Inspector', caps: [{ id: 'sys.read', risk: 'low', desc: 'OS/runtime/interface facts from the host process' }], state: 'AVAILABLE' },
   { id: 'fs', name: 'Scoped Filesystem', caps: [{ id: 'fs.read', risk: 'low', desc: 'List/read files inside the LIAM userfiles sandbox' }, { id: 'fs.write', risk: 'medium', desc: 'Write/delete files inside the sandbox only' }], state: 'AVAILABLE' },
   { id: 'http', name: 'Guarded HTTP', caps: [{ id: 'http.get', risk: 'medium', desc: 'Real outbound GET with SSRF/private-address/metadata blocking' }], state: 'AVAILABLE' },
   { id: 'weather', name: 'Open-Meteo Weather', caps: [{ id: 'weather.get', risk: 'medium', desc: 'Real geocoding + forecast via Open-Meteo (no key required)' }], state: 'AVAILABLE' },
+  { id: 'groq', name: 'Groq AI (free tier, forever)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via Groq — free key, no card' }], state: 'FREE KEY — say “connect groq with token <key>”' },
+  { id: 'gemini', name: 'Google AI Studio (Gemini, free tier)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via Gemini — free key, no card' }], state: 'FREE KEY — say “connect gemini with token <key>”' },
+  { id: 'openrouter', name: 'OpenRouter (aggregator, “:free” models)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via OpenRouter free models' }], state: 'FREE KEY — say “connect openrouter with token <key>”' },
+  { id: 'deepseek', name: 'DeepSeek (free grant on signup)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via DeepSeek' }], state: 'FREE KEY — say “connect deepseek with token <key>”' },
+  { id: 'mistral', name: 'Mistral (free tier)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'LLM chat via Mistral' }], state: 'FREE KEY — say “connect mistral with token <key>”' },
+  { id: 'ollama', name: 'Ollama (local open-source models)', caps: [{ id: 'llm.chat', risk: 'medium', desc: 'Runs on this machine at 127.0.0.1:11434 — no key, nothing leaves' }], state: 'LOCAL — install Ollama, “ollama pull llama3.2”' },
   { id: 'exec', name: 'Allowlisted Executor', caps: [{ id: 'exec.run', risk: 'medium', desc: 'Bounded, shell:false allowlisted operations with timeouts and output caps' }], state: 'AVAILABLE' },
   { id: 'economy', name: 'LD Ledger (simulation)', caps: [{ id: 'economy.manage', risk: 'medium', desc: 'Double-entry simulation ledger; 100 LD = A$1.00 reference' }], state: 'AVAILABLE' },
   { id: 'arena', name: 'Arena Engine', caps: [{ id: 'arena.fight', risk: 'low', desc: 'Server-authoritative battles' }], state: 'AVAILABLE' },
@@ -672,6 +716,34 @@ const TOOLS = {
       const results = list.map(x => disconnectAccountCmd(x.id));
       return { service: a.service, disconnected: results.map(r => r.account), grantsRevoked: results.reduce((n2, r) => n2 + r.revokedGrants.length, 0) };
     } },
+  /* ── v1.67: multi-provider AI chat — truth-stated, key-in-header ── */
+  'llm.status': { cap: 'llm.status', risk: 'low', verification: 'credential-store lookup; live local probe for Ollama only', run: async () => {
+      const rows = llm.PROVIDERS.map(p => ({
+        id: p.id, name: p.name, shape: p.shape, defaultModel: p.defaultModel, free: p.free, connect: p.connect,
+        configured: p.requiresKey ? !!decryptToken(p.id) : true,
+        requiresKey: p.requiresKey
+      }));
+      const local = await llm.ollamaModels({ localFetch: llmLocalFetch });
+      const oRow = rows.find(r => r.id === 'ollama');
+      if (local) oRow.models = local; else oRow.models = null;
+      return { defaultProvider: (S.llm && S.llm.default) || null, providers: rows, note: 'configured ≠ verified — say “verify <provider>” for a real round trip' };
+    } },
+  'llm.chat': { cap: 'llm.chat', risk: 'medium', verification: 'provider reply parsed, non-empty; provider+model+latency recorded', run: async a => {
+      const p = llmResolveProvider(a.provider);
+      if (!p) return { error: 'No AI provider is configured yet. Free options: ' + llm.PROVIDERS.filter(x => x.requiresKey).map(x => x.id + ' (' + x.free + ')').join('; ') + ' — or Ollama locally, no key needed (install, "ollama pull llama3.2"). Then “ask …”.', truthful: true };
+      if (p.error) return p;
+      const r = await llm.chat(p.id, a, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
+      if (r.ok) { S.llm.calls = (S.llm.calls || 0) + 1; save(); return { provider: r.provider, model: r.model, reply: r.content, usage: r.usage, latencyMs: r.latencyMs }; }
+      return Object.assign({ truthful: true }, r);
+    } },
+  'llm.verify': { cap: 'llm.verify', risk: 'medium', verification: 'a real minimal round trip with the stored credential', run: async a => {
+      const p = llmResolveProvider(a.provider);
+      if (!p) return { error: 'Nothing to verify yet — say “connect <provider> with token <key>” first (groq/gemini/openrouter/deepseek/mistral are free-tier; ollama needs no key).', truthful: true };
+      if (p.error) return p;
+      const r = await llm.chat(p.id, { prompt: 'Reply with the single word: ready', maxTokens: 8, temperature: 0 }, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
+      if (!r.ok) return { error: 'Verify FAILED against ' + p.id + ' (real call): ' + r.error, truthful: true };
+      return { provider: r.provider, model: r.model, latencyMs: r.latencyMs, sample: r.content.slice(0, 40), verified: true };
+    } },
   /* ── v1.64: §124 mock adapter executed through the real pipeline ── */
   'mock.echo': { cap: 'mock.echo', risk: 'low', simulation: true, verification: 'mode returned by the adapter itself', run: (a, o) => {
       const ad = caps.MOCK_ADAPTERS.find(x => x.behaviour === (a.behaviour || 'succeed')) || caps.MOCK_ADAPTERS[0];
@@ -837,7 +909,8 @@ const TOOL_SCOPES = {
   'github.readfile': ['network', 'integration'], 'github.writefile': ['network', 'integration'],
   'stripe.verify': ['network', 'integration'], 'account.discover': ['account', 'network'],
   'account.configure': ['account'], 'account.disconnect': ['account'],
-  'knowledge.write': ['task'], 'mock.echo': ['task'], 'economy.selftest': ['task']
+  'knowledge.write': ['task'], 'mock.echo': ['task'], 'economy.selftest': ['task'],
+  'llm.status': ['task'], 'llm.chat': ['network', 'integration'], 'llm.verify': ['network', 'integration']
 };
 function toolScopes(toolId) {
   const id = String(toolId || '');
@@ -1576,7 +1649,40 @@ async function command(text) {
 
   if (low.includes('github')) { const r = await runTool('github.status', {}, {}); return r.ok ? R('GitHub reachable.') : R(r.evidence ? r.evidence.error : r.error); }
 
+  /* v1.67: the AI brain — explicit asks, provider selection, verification.
+   * Matched late so rule-based intents keep priority: the router is the
+   * audited surface; the LLM advises and answers, it does not execute. */
+  if ((m = q.match(/^(?:ask|ai)\s+([\s\S]+)$/i))) {
+    const r = await runTool('llm.chat', { prompt: m[1] }, {});
+    return r.ok ? R('🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + r.result.reply) : R(r.error || 'The AI provider could not answer.');
+  }
+  if ((m = low.match(/^ai provider (\w+)$/))) {
+    const p = llm.providerById(m[1]);
+    if (!p) return R('Unknown provider “' + m[1] + '”. Known: ' + llm.PROVIDER_IDS.join(', ') + '.');
+    if (p.requiresKey && !decryptToken(p.id)) return R(p.name + ' has no stored credential yet. Say “' + p.connect + '” first.');
+    S.llm.default = p.id; save(); audit('tool', 'LLM default provider set to ' + p.id, 'user', {});
+    return R('Default AI provider is now ' + p.id + (p.requiresKey ? '.' : ' — local, nothing leaves this machine.') + ' Say “ask …” anytime.');
+  }
+  if ((m = low.match(/^(?:verify|check) (groq|gemini|openrouter|deepseek|mistral|ollama|ai)$/))) {
+    const r = await runTool('llm.verify', { provider: m[1] === 'ai' ? undefined : m[1] }, {});
+    return r.ok ? R('AI provider VERIFIED with a real round trip: ' + r.evidence.provider + ' · ' + r.evidence.model + ' (' + r.evidence.latencyMs + 'ms). It now answers “ask …”.') : R(r.error || 'Verification failed.');
+  }
   return null; // not a platform intent
+}
+
+/* v1.67: when the rule router has no intent, let the connected AI brain
+ * answer instead of a dead end. Always labelled; never executes anything. */
+async function chatFallback(text) {
+  const q0 = String(text || '').trim();
+  if (!q0) return null;
+  const r = await runTool('llm.chat', { prompt: q0 }, {});
+  if (r.ok) return { ok: true, kind: 'ai', provider: r.result.provider, model: r.result.model, reply: '🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + r.result.reply + '\n— external model, advisory only; commands run through the audited router.' };
+  return {
+    ok: false, kind: 'ai-unconfigured',
+    reply: 'I have no rule-based intent for “' + q0.slice(0, 80) + '” and no AI provider is connected, so I will not guess. Free options:\n' +
+      llm.PROVIDERS.filter(p => p.requiresKey).map(p => '• ' + p.id + ' — ' + p.free + ' → “' + p.connect + '”').join('\n') +
+      '\n• ollama — fully local, no key: install Ollama, “ollama pull llama3.2”, then “verify ollama”.\nSay “help” for everything I execute today.'
+  };
 }
 
 /* ── Credential broker: secrets encrypted at rest ───────── */
@@ -2412,6 +2518,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
@@ -2594,6 +2701,7 @@ module.exports = {
   observability, releaseInfo,
   EMERGENCIES, setEmergency, grant, revoke, permitted,
   createApproval, decideApproval, approved,
+  chatFallback, llmRegistry: () => llm.PROVIDERS,
   requestHumanStep, resolveHumanStep, consumeHumanStep, cancelHumanStep, HUMAN_STEP_KINDS,
   humanSteps: () => S.humanSteps.slice(0, 100),
   ADAPTERS, TOOLS, runTool, guardedFetch,

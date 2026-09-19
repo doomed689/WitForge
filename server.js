@@ -143,8 +143,10 @@ const server = http.createServer(async (req, res) => {
     const b = await body(req);
     const r = await P.withCid(() => P.command(b.text));
     if (r) return json(res, 200, r);
-    /* Nothing matched. Say so, in plain words, with the way forward — chat is
-     * the control surface, so it never answers a request with silence. */
+    /* Nothing matched. The AI brain (if connected) answers, labelled;
+     * otherwise the honest setup guidance. Chat never dead-ends. */
+    const fb = await P.chatFallback(b.text);
+    if (fb) return json(res, 200, fb);
     return json(res, 200, {
       ok: false, unhandled: true, text: b.text,
       reply: 'I do not have an intent for “' + String(b.text || '').slice(0, 80) + '”. Say “help” for everything I can do, “preview <command>” to see what a command would do, or rephrase it as an action (“create task …”, “forge …”, “buy 500 ld”, “open lotto round”, “plans”, “protect me”).'

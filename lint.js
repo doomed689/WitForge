@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const SERVER_FILES = ['server.js', 'platform.js', 'kernel.js', 'capabilities.js', 'task-engine.js', 'platform-services.js', 'arena-engine.js', 'races.js', 'spec-coverage.js', 'engagement.js', 'owner-security.js'];
+const SERVER_FILES = ['server.js', 'llm.js', 'platform.js', 'kernel.js', 'capabilities.js', 'task-engine.js', 'platform-services.js', 'arena-engine.js', 'races.js', 'spec-coverage.js', 'engagement.js', 'owner-security.js'];
 const ALL_FILES = SERVER_FILES.concat(['app.js', 'build.js', 'lint.js', 'spec-test.js', 'adversarial-test.js', 'platform-test.js', 'arena-test.js', 'engagement-test.js', 'smoke-test.js']);
 
 const findings = [];
