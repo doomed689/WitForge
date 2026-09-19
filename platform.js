@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.70.0';
+const VERSION = '1.71.0';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -44,6 +44,7 @@ function freshState() {
     reminders: [], notifications: [], schedules: [],
     llm: { default: null, calls: 0 },   // v1.67 AI brain config (provider keys live encrypted in creds)
     social: { verified: {} },           // v1.69 social connector verification evidence
+    proposals: [],                      // v1.71 AI-proposed commands awaiting the owner's "do <id>"
     /* ── v1.64 specification systems ───────────────────────────── */
     stops: {},                       // §55 emergency stop scopes
     devices: [],                     // §40/§104 device trust + inventory
@@ -102,6 +103,7 @@ Object.assign(S, Object.assign(freshState(), S)); // backfill new fields on old 
 S.economy = Object.assign({ realMode: false, stripeAccount: null, credited: {} }, S.economy);
 S.market = S.market || [];
 S.social = Object.assign({ verified: {} }, S.social);
+S.proposals = S.proposals || [];
 /* LD pools are explicit ledger accounts: a reward can only be paid from a pool
  * that was funded, and funding is an audited issuance from the LD Issuance
  * reserve. Nothing appears out of nowhere (§164). */
@@ -385,7 +387,7 @@ const llmLocalFetch = async (url, headers, opts) => {
       let text = ''; rs.on('data', c => { text += c; if (text.length > 400000) rq.destroy(); });
       rs.on('end', () => resolve({ ok: rs.statusCode >= 200 && rs.statusCode < 300, status: rs.statusCode, text: text.slice(0, 400000) }));
     });
-    rq.on('error', e => resolve({ ok: false, error: e.code === 'ECONNREFUSED' ? 'Ollama is not reachable on 127.0.0.1:11434 — install it, "ollama serve", then "ollama pull ' + llm.providerById('ollama').defaultModel + '"' : e.message }));
+    rq.on('error', e => resolve({ ok: false, error: e.code === 'ECONNREFUSED' ? 'Ollama is not reachable on 127.0.0.1:' + llm.OLLAMA_PORT() + ' — install it, "ollama serve", then "ollama pull ' + llm.providerById('ollama').defaultModel + '"' : e.message }));
     rq.setTimeout(opts.timeoutMs || 120000, () => { rq.destroy(new Error('timeout')); });
     if (opts.body) rq.write(opts.body);
     rq.end();
@@ -403,6 +405,33 @@ function llmResolveProvider(requested) {
   llm.DEFAULT_ORDER.forEach(id => { if (!order.includes(id)) order.push(id); });
   for (const id of order) { const p = llm.providerById(id); if (p && (!p.requiresKey || decryptToken(p.id))) return p; }
   return null;
+}
+
+/* ── v1.71: AI-proposed commands (§168 in practice) ──────────────────
+ * The brain may SUGGEST a command; only the owner runs it, through the
+ * normal audited router (permissions, approvals and stops all apply).
+ * Proposals are single-use and may never carry confirmation or approval
+ * words — those the owner types personally. */
+function createProposal(commandTxt, source, note) {
+  const pr = { id: 'pr' + (S.seq++).toString(36), command: String(commandTxt || '').trim().slice(0, 200), source: source || 'ai', note: note || null, status: 'proposed', ts: Date.now() };
+  S.proposals.unshift(pr); if (S.proposals.length > 50) S.proposals.length = 50;
+  audit('approval', `Proposal ${pr.id} created (${pr.source}): ${pr.command}`, 'system', { step: pr.id });
+  save();
+  return pr;
+}
+function consumeProposal(id) {
+  const pr = S.proposals.find(x => x.id === id);
+  if (!pr) return { ok: false, error: 'Unknown proposal ' + id };
+  if (pr.status !== 'proposed') return { ok: false, error: 'Proposal ' + id + ' is already ' + pr.status };
+  return { ok: true, proposal: pr };
+}
+function markProposalExecuted(id) {
+  const pr = S.proposals.find(x => x.id === id);
+  if (!pr) return { ok: false };
+  pr.status = 'executed'; pr.executedTs = Date.now();
+  audit('approval', `Proposal ${id} executed by owner: ${pr.command}`, 'user', { step: id });
+  save();
+  return { ok: true };
 }
 
 /* ── v1.69: social media connectors — legitimate interfaces only ─────
@@ -807,6 +836,25 @@ const TOOLS = {
       if (S.llm) { S.llm.calls = (S.llm.calls || 0) + r.answers.length; save(); }
       return { providersAsked: ids, answers: r.answers.map(x => ({ provider: x.provider, model: x.model, latencyMs: x.latencyMs, reply: x.content })), failures: r.failures };
     } },
+  /* ── v1.71: local model management (Ollama, real API calls) ─────── */
+  'local.pull': { cap: 'local.pull', risk: 'medium', verification: 'the local Ollama reports the pull successful; installed list refreshed', run: async a => {
+      const name = String(a.model || '').trim().toLowerCase().slice(0, 60);
+      if (!/^[a-z0-9][a-z0-9._:-]{2,59}$/.test(name)) return { error: 'Provide a model name like qwen2.5:0.5b — say “local pull qwen2.5:0.5b”.', truthful: true };
+      const res = await llmLocalFetch('http://127.0.0.1:' + llm.OLLAMA_PORT() + '/api/pull', {}, { method: 'POST', body: JSON.stringify({ model: name, stream: false }), timeoutMs: 600000 });
+      if (!res.ok) return { error: 'Pull FAILED (real call to the local Ollama): ' + String(res.error || res.text || '').slice(0, 200), truthful: true };
+      let j = {}; try { j = JSON.parse(res.text); } catch (e) {}
+      if (j.error) return { error: 'Pull FAILED: ' + j.error, truthful: true };
+      const models = await llm.ollamaModels({ localFetch: llmLocalFetch });
+      return { ok: true, model: name, status: j.status || 'success', models };
+    } },
+  'local.remove': { cap: 'local.remove', risk: 'medium', verification: 'the local Ollama acknowledges the delete; installed list refreshed', run: async a => {
+      const name = String(a.model || '').trim().toLowerCase().slice(0, 60);
+      if (!/^[a-z0-9][a-z0-9._:-]{2,59}$/.test(name)) return { error: 'Provide the exact model name to remove (see “local models”).', truthful: true };
+      const res = await llmLocalFetch('http://127.0.0.1:' + llm.OLLAMA_PORT() + '/api/delete', {}, { method: 'POST', body: JSON.stringify({ model: name }), timeoutMs: 30000 });
+      if (!res.ok) return { error: 'Remove FAILED (real call): ' + String(res.error || res.text || '').slice(0, 200), truthful: true };
+      const models = await llm.ollamaModels({ localFetch: llmLocalFetch });
+      return { ok: true, removed: name, models };
+    } },
   /* ── v1.69: social connectors (official APIs, owner credentials) ── */
   'social.status': { cap: 'social.status', risk: 'low', verification: 'credential-store lookup + recorded verification evidence', run: async () => ({
       connectors: SOCIALS.map(x => ({ id: x.id, name: x.name, postable: x.postable, reason: x.reason || null, configured: !!decryptToken(x.id), verified: !!(S.social.verified[x.id]), signup: x.signup })),
@@ -1052,7 +1100,8 @@ const TOOL_SCOPES = {
   'llm.status': ['task'], 'llm.chat': ['network', 'integration'], 'llm.verify': ['network', 'integration'],
   'llm.ensemble': ['network', 'integration'],
   'social.status': ['task'], 'social.verify': ['network', 'integration'], 'social.post': ['network', 'integration'],
-  'update.check': ['task'], 'update.apply': ['task']
+  'update.check': ['task'], 'update.apply': ['task'],
+  'local.pull': ['task'], 'local.remove': ['task']
 };
 function toolScopes(toolId) {
   const id = String(toolId || '');
@@ -1224,6 +1273,35 @@ async function command(text) {
 
   if ((m = low.match(/^connect (proton)(?: .*)?$/)) || low === 'connect proton') {
     return R('Proton publishes NO public payment/wallet merchant API, so a real integration cannot exist. I will not simulate one. Proton connector state stays “NO PUBLIC API”. For receiving real payments, use Stripe: “connect stripe with token sk_…”, then “verify stripe”.');
+  }
+  /* v1.71: the AI proposes, the owner disposes. */
+  if ((m = q.match(/^propose\s+([\s\S]+)$/i)) || (m = q.match(/^ask propose\s+([\s\S]+)$/i))) {
+    const r = await runTool('llm.chat', { prompt: m[1] }, {});
+    if (!r.ok) return R(r.error || 'The AI provider could not answer.');
+    const sug = String(r.result.reply || '').match(/^SUGGEST:\s*(.+)$/mi);
+    const clean = String(r.result.reply || '').replace(/^SUGGEST:\s*.+$/mi, '').trim();
+    if (!sug) return R('🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + clean + '\n\n(no command proposed — this answer is advice only)');
+    const pr = createProposal(sug[1], 'ai', null);
+    return R('🤖 [' + r.result.provider + ' · ' + r.result.model + '] ' + clean + '\n\n📋 Proposed command: “' + pr.command + '” — say “do ' + pr.id + '” to run it. It goes through the normal audited router: permissions and approvals still apply, and nothing runs without you.');
+  }
+  if ((m = low.match(/^do (pr\w+)$/))) {
+    const c = consumeProposal(m[1]);
+    if (!c.ok) return R(c.error);
+    if (/\bconfirm\b/i.test(c.proposal.command) || /^(approve|resolve)\s/i.test(c.proposal.command.trim())) return R('Refused: proposals cannot carry confirmations or approvals — run “' + c.proposal.command + '” yourself.');
+    markProposalExecuted(m[1]);
+    return await command(c.proposal.command);
+  }
+  if (low === 'local models' || low === 'models') {
+    const models = await llm.ollamaModels({ localFetch: llmLocalFetch });
+    return R(models && models.length ? 'Local models installed (Ollama):\n' + models.map(x => '• ' + x).join('\n') + '\nPull more: “local pull <model>” · remove: “local remove <model>”.' : 'No local models are installed yet. Say “local pull qwen2.5:0.5b” to fetch one (~400MB, runs fully offline).');
+  }
+  if ((m = low.match(/^local pull ([a-z0-9][a-z0-9._:-]{2,59})$/))) {
+    const r = await runTool('local.pull', { model: m[1] }, {});
+    return r.ok ? R('Pulled ' + m[1] + ' (real Ollama pull). Installed now: ' + (r.result.models || []).join(', ') + ' — “ask …” uses the first installed model.') : R(r.error);
+  }
+  if ((m = low.match(/^local remove ([a-z0-9][a-z0-9._:-]{2,59})$/))) {
+    const r = await runTool('local.remove', { model: m[1] }, {});
+    return r.ok ? R('Removed ' + m[1] + '. Installed now: ' + ((r.result.models || []).join(', ') || 'none') + '.') : R(r.error);
   }
   if ((m = q.match(/^connect ([a-zA-Z0-9-]+) (?:with )?(?:token )?(.+)$/i))) {
     const r = setCredential(m[1].toLowerCase(), m[2].trim());
@@ -2758,7 +2836,7 @@ function importManifest(man, confirmed) {
 /* §3/§166: chat is the control surface, so it must be able to say what it can
  * do. This list is checked against the real router intents in the test suite. */
 const CAPABILITY_HELP = [
-  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
+  { group: 'AI brain', items: ['“ask <anything>” — real LLM reply, labelled provider · model', '“ai provider groq” — pick the default (groq/gemini/openrouter/deepseek/mistral/ollama)', '“verify groq” — live round trip with a free key', '“ask all <question>” — ensemble: every connected provider answers at once', '“ask consensus <question>” — ask everyone, then synthesize one balanced verdict', '“propose <question>” · “do <id>” — the AI proposes a command, you run it (§168)', '“local models” · “local pull qwen2.5:0.5b” — manage your own AI models from chat', '“ld packages” · “buy ld package <id>” — bundled LD in the marketplace', '“social” · “verify x” · “post x <text>” — official-API social connectors, approval-gated posting', '“update check” · “update apply” — self-update from the audited repo, approval-gated + backed up', 'ollama = local open-source models: no key, nothing leaves the machine'] },
   { group: 'Talk to it', items: ['“help” — this list', '“status” / “release” — runtime truth', '“preview <command>” — what would happen, without doing it'] },
   { group: 'Authority', items: ['“permissions” · “grant fs.write” · “revoke fs.write”', '“suspend fs.write” / “resume fs.write”', '“risk fs.delete” · “policy fs.delete”', '“approve <id>” · “stop <id>”', '“human steps” · “resolve <step> with <answer>” — captcha/2FA/consent gates are yours to complete, never bypassed', '“stop network” · “emergency stop all” · “resume network”', '“autonomous on confirm” · “autonomous off”'] },
   { group: 'LD economy', items: ['“economy” · “piece prices” · “ld market”', '“buy 500 ld” · “sell 500 ld”', '“forge sword at rare: a rune-etched blade” · “mint asset piece rarity 5”', '“provision loadout <avatar>” · “summon pet for <avatar>”', '“market” · “buy <listing>” · “sell <item> for 200” · “balance”'] },
@@ -2943,6 +3021,7 @@ module.exports = {
   createApproval, decideApproval, approved,
   chatFallback, llmRegistry: () => llm.PROVIDERS,
   buyLdPackageCmd, ldPackagesList, LD_PACKAGES, SOCIALS,
+  createProposal, consumeProposal,
   requestHumanStep, resolveHumanStep, consumeHumanStep, cancelHumanStep, HUMAN_STEP_KINDS,
   humanSteps: () => S.humanSteps.slice(0, 100),
   ADAPTERS, TOOLS, runTool, guardedFetch,

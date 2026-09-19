@@ -19,8 +19,8 @@ tranche. They are kept in the tree so every claim in `README.md`, `STATUS.md` an
 ## Verification commands
 
 ```sh
-node analysis/gap-scan.js          # 84/84 probed requirements present
-npm test                           # 518 checks across six suites, 0 failures
+node analysis/gap-scan.js          # 89/89 probed requirements present
+npm test                           # 527 checks across six suites, 0 failures
 npm run build && npm run lint      # source validation + project lint rules
 npm run selftest                   # §126 self-test (PASS/FAIL/WARNING/NOT_TESTED)
 python3 analysis/report.py         # regenerate the report

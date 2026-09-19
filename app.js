@@ -553,7 +553,7 @@ function renderStatus() {
   </div>
   <div class="facet-card"><h4>Adapter truth table</h4>${S.adapters.map(a => row(a.id, `${esc(a.name)} → <b>${esc(a.state)}</b>`)).join('')}</div>
    <div class="facet-card"><h4>Release metadata (§129)</h4>
-     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.70.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
+     ${(S.release ? [['version', S.release.version], ['build date', fmtDate(S.release.buildDate)], ['source revision', S.release.sourceRevision], ['dependency state', S.release.dependencyState], ['test status', S.release.testStatus], ['security status', S.release.securityStatus]] : [['version', S.version || '1.71.0'], ['release metadata', 'say “release” in Chat to generate it']]).map(([k, v]) => row(k, esc(String(v)))).join('')}</div>
    <div class="facet-card"><h4>Live systems (§119)</h4>
      ${row('observability', `metrics ${(S.observability || {}).metrics || 0} · spans ${(S.observability || {}).spans || 0}`)}
      ${row('evidence vault', S.evidenceVault ? `${S.evidenceVault.entries} record(s) · ${S.evidenceVault.ok ? 'VERIFIED' : 'CHECK'}` : '—')}
@@ -1256,7 +1256,7 @@ function toggleCollapse() {
 /* ── Global wiring ───────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   try { const ui = JSON.parse(localStorage.getItem('liam.ui') || '{}'); if (ui.collapsed && window.innerWidth > 960) document.body.classList.add('sidebar-collapsed'); } catch (e) {}
-  $('#buildTag').textContent = 'LIAM v1.70.0 · 175-REQUIREMENT COVERAGE';
+  $('#buildTag').textContent = 'LIAM v1.71.0 · 175-REQUIREMENT COVERAGE';
   await refreshState();
   renderNav();
   refreshStatus();

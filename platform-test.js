@@ -8,6 +8,7 @@ const path = require('path');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'liam-plat-'));
 process.env.PLATFORM_DATA = path.join(tmp, 'platform.json');
+process.env.LIAM_OLLAMA_PORT = '11435';   // the scripted local-model fake binds here, never on the real 11434
 delete require.cache[require.resolve('./platform.js')];
 const P = require('./platform.js');
 
@@ -293,7 +294,7 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(!!llmMod.dryRun('groq', {}).error, 'an empty ask is rejected before any network call');
   const gd = llmMod.dryRun('groq', { prompt: 'x' });
   ok(gd.body.messages.length === 2 && gd.body.messages[1].content === 'x', 'system prompt + user message ordering');
-  ok(llmMod.validateLocalUrl('http://127.0.0.1:11434/api/chat').ok === true, 'local model endpoint: loopback 11434 allowed');
+  ok(llmMod.validateLocalUrl('http://127.0.0.1:' + llmMod.OLLAMA_PORT() + '/api/chat').ok === true, 'local model endpoint: the configured loopback port is allowed');
   ok(!!llmMod.validateLocalUrl('http://10.0.0.5:11434/api/chat').error, 'local model endpoint: private LAN rejected');
   ok(!!llmMod.validateLocalUrl('http://127.0.0.1:9999/api/chat').error, 'local model endpoint: non-Ollama port rejected');
   ok(!!llmMod.validateLocalUrl('https://example.com/api/chat').error, 'local model endpoint: remote host rejected');
@@ -320,17 +321,21 @@ const run = (t, a) => P.runTool(t, a || {}, {});
     let b = ''; rq.on('data', c => { b += c; }); rq.on('end', () => {
       rs.setHeader('content-type', 'application/json');
       if (rq.url === '/api/tags') { rs.end(JSON.stringify({ models: [{ name: 'llama3.2:latest' }] })); return; }
+      if (rq.url === '/api/pull') { rs.end(JSON.stringify({ status: 'success' })); return; }
+      if (rq.url === '/api/delete') { rs.end(JSON.stringify({ status: 'deleted' })); return; }
       let last = ''; try { const j = JSON.parse(b); last = (j.messages || []).slice(-1)[0].content || ''; } catch (e) {}
-      rs.end(JSON.stringify({ model: 'llama3.2', message: { role: 'assistant', content: 'local echo: ' + last.slice(0, 30) } }));
+      let content = 'local echo: ' + last.slice(0, 30);
+      if (last.includes('SUGGEST-mode')) content = 'Done deal.\nSUGGEST: balance';
+      if (last.includes('CONFIRM-mode')) content = 'Careful.\nSUGGEST: draw lotto confirm';
+      rs.end(JSON.stringify({ model: 'llama3.2', message: { role: 'assistant', content } }));
     });
   });
-  let usingReal = false;
-  await new Promise(res => {
-    fake.once('error', e => { if (e.code === 'EADDRINUSE') { usingReal = true; res(); } });
-    fake.listen(11434, '127.0.0.1', () => res());
+  await new Promise((res, rej) => {
+    fake.once('error', rej);
+    fake.listen(11435, '127.0.0.1', () => res());
   });
   const loc = await P.runTool('llm.chat', { prompt: 'ping local' }, {});
-  ok(loc.ok && loc.result.provider === 'ollama' && String(loc.result.reply).length > 0, 'local Ollama round trip works through the validated loopback path (' + (usingReal ? 'machine\'s real Ollama' : 'isolated fake endpoint') + ')');
+  ok(loc.ok && loc.result.provider === 'ollama' && String(loc.result.reply).length > 0, 'local Ollama round trip works through the validated loopback path (isolated scripted endpoint)');
   const fbf = await P.runTool('llm.chat', { prompt: 'ping', model: 'definitely-not-installed-model' }, {});
   ok(fbf.ok && fbf.result.model !== 'definitely-not-installed-model', 'an uninstalled local model name falls back to an installed one');
   const ver = await P.runTool('llm.verify', { provider: 'ollama' }, {});
@@ -347,12 +352,26 @@ const run = (t, a) => P.runTool(t, a || {}, {});
   ok(fb && fb.ok === true && fb.kind === 'ai' && fb.provider === 'ollama', 'chatFallback answers through the LLM when one is configured');
   const cons = await P.command('ask consensus what is one plus one?');
   ok(cons && cons.ok && /Consensus \[/.test(cons.reply) && /answers considered \(1\)/.test(cons.reply), 'chat "ask consensus" ensembles then synthesizes a labelled verdict');
+  const lpPull = await P.runTool('local.pull', { model: 'tiny' }, {});
+  ok(lpPull.ok && lpPull.result.status === 'success', 'local pull reports success from the real ollama API shape');
+  ok(!(await P.runTool('local.pull', { model: 'BAD NAME!' }, {})).ok, 'local pull rejects malformed model names before any call');
+  ok((await P.runTool('local.remove', { model: 'llama3.2' }, {})).ok, 'local remove works through the ollama API');
+  const prop = await P.command('propose SUGGEST-mode how do I see my balance');
+  ok(prop && prop.ok && /Proposed command/.test(prop.reply) && P.state.proposals.length >= 1, 'propose captures the AI-suggested command as a proposal');
+  const prId = P.state.proposals[0].id;
+  const done = await P.command('do ' + prId);
+  ok(done && done.ok && P.state.proposals.find(x => x.id === prId).status === 'executed', 'do <id> executes the proposed command through the audited router');
+  await P.command('propose CONFIRM-mode run the lotto draw');
+  const prId2 = P.state.proposals.find(x => /confirm/i.test(x.command)).id;
+  const refused = await P.command('do ' + prId2);
+  ok(refused && /cannot carry confirmations/i.test(refused.reply), 'proposals carrying confirmation words are refused');
+  ok(/Unknown proposal/.test((await P.command('do przz')).reply), 'an unknown proposal id is refused');
   const expCap = await P.runTool('llm.chat', { prompt: 'ttl check' }, {});
   ok(expCap.ok === true, 'capability fresh before the expiry test');
   P.state.permissions['llm.chat'].token.exp = Date.now() - 1000; P.save();
   const expCap2 = await P.runTool('llm.chat', { prompt: 'ttl check 2' }, {});
   ok(expCap2.ok === true && P.state.permissions['llm.chat'].state === 'GRANTED' && P.state.permissions['llm.chat'].token.exp > Date.now(), 'an EXPIRED capability on an owner-initiated medium tool is refreshed via the documented EXPIRED→REQUESTED path, not denied');
-  if (!usingReal) fake.close();
+  fake.close();
 
   /* ── v1.69: plans 5+3, LD packages, social connectors, self-update ── */
   const servicesMod = require('./platform-services.js');

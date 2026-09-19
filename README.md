@@ -1,4 +1,4 @@
-# LIAM · v1.70 — ask consensus: the ensemble, synthesized
+# LIAM · v1.71 — the AI proposes, you dispose (§168, executable)
 
 Local-first, security-first operating platform implementing the WitForge
 master specification against the LIAM control-centre surface. The server is
@@ -30,13 +30,27 @@ npm run selftest        # §126 self-test → PASS/FAIL/WARNING/NOT_TESTED
 |---|---|---|
 | `spec-test.js` | 93 | §125 release areas: authentication → failure continuation |
 | `adversarial-test.js` | 78 | §150 the 13 mandated attack classes + audit tampering |
-| `platform-test.js` | 145 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM ensemble + consensus, plans/LD packages/social/self-update |
+| `platform-test.js` | 154 | ledger, SSRF, sandbox, allow-list, approvals, router, human gates, LLM ensemble/consensus/proposals, local model management, plans/LD packages/social/self-update |
 | `arena-test.js` | 28 | races, naked starts, loadout gate, determinism |
 | `engagement-test.js` | 117 | v1.65: LD costs, LD market, events, lotto, rewards, plans, guardian |
 | `smoke-test.js` | 57 | boots the real server and renders every view; chat-over-HTTP replies and the human-gate round trip |
 
 Requirement-level gap analysis against the 168-section master spec:
-`node analysis/gap-scan.js` → **84/84 probed requirements present**.
+`node analysis/gap-scan.js` → **89/89 probed requirements present**.
+
+## v1.71 — propose/do: AI proposes, the owner disposes
+
+`propose <question>` asks the brain for advice; if the reply maps to a
+platform command (the model ends with `SUGGEST: <command>`), the platform
+shows it as a proposal — say `do <id>` and the command runs through the
+normal audited router (permissions, approvals and stops all still apply).
+Proposals are single-use and may never carry confirmation or approval
+words — those you type personally. This is §168 made executable: *AI
+proposes; humans authorize; server enforces.* Also new: chat-managed
+local models — `local models`, `local pull <model>`, `local remove
+<model>` (real Ollama API calls; the local port is loopback-pinned with a
+validated test override). The requirement probe suite grew to **89/89**
+covering every platform addition since the master spec.
 
 ## v1.70 — ask consensus
 

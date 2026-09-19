@@ -14,6 +14,11 @@
  */
 'use strict';
 
+/* Local Ollama port. Pinned to 11434 in normal operation; the env override
+ * exists so the test suite can bind its scripted fake on another loopback
+ * port without weakening validation (loopback-only either way). */
+const OLLAMA_PORT = Number(process.env.LIAM_OLLAMA_PORT) || 11434;
+
 const PROVIDERS = [
   {
     id: 'groq', name: 'Groq (free tier)', shape: 'openai', requiresKey: true,
@@ -52,7 +57,7 @@ const PROVIDERS = [
   },
   {
     id: 'ollama', name: 'Ollama (your machine, open-source models)', shape: 'ollama', requiresKey: false,
-    keyHint: null, endpoint: 'http://127.0.0.1:11434',
+    keyHint: null, endpoint: 'http://127.0.0.1:' + OLLAMA_PORT,
     defaultModel: 'llama3.2',
     free: 'fully local and free — you own the model; nothing leaves the machine',
     connect: 'install Ollama and "ollama pull llama3.2" — no key needed'
@@ -67,9 +72,12 @@ const SYSTEM_PROMPT =
   'command router executes real actions (forge/marketplace/LD economy, tasks, playbooks, ' +
   'approvals, devices, connectors). Truth rules: never claim you performed an action — ' +
   'suggest the closest chat command and say the user must run it; never invent features; ' +
-  'be concise and practical. High-risk actions are approval-gated and that is by design.';
+  'be concise and practical. High-risk actions are approval-gated and that is by design. ' +
+  'When the user asks for something a WitForge command could do, you may end your reply with a final ' +
+  'line "SUGGEST: <exact chat command>" — the platform shows it as a proposal the user must explicitly run.';
 
 function providerById(id) { return PROVIDERS.find(p => p.id === id) || null; }
+
 
 /* Build the exact request a provider would receive — exported and used dry
  * by the tests, so the wire format is checked without any network call. */
@@ -149,7 +157,7 @@ function validateLocalUrl(urlStr) {
   try { u = new URL(urlStr); } catch (e) { return { error: 'Invalid URL' }; }
   if (u.protocol !== 'http:') return { error: 'Local model endpoint must be http on loopback' };
   if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(u.hostname)) return { error: 'Local model endpoint must be 127.0.0.1/localhost' };
-  if (u.port !== '11434') return { error: 'Only the Ollama port 11434 is allowed' };
+  if (u.port !== String(OLLAMA_PORT)) return { error: 'Only the configured Ollama port ' + OLLAMA_PORT + ' is allowed' };
   return { ok: true, url: u };
 }
 
@@ -197,7 +205,7 @@ async function chat(providerId, args, deps) {
  * live localFetch is wired. */
 async function ollamaModels(deps) {
   if (!deps || !deps.localFetch) return null;
-  const res = await deps.localFetch('http://127.0.0.1:11434/api/tags', {}, { method: 'GET', timeoutMs: 3000 });
+  const res = await deps.localFetch('http://127.0.0.1:' + OLLAMA_PORT + '/api/tags', {}, { method: 'GET', timeoutMs: 3000 });
   if (!res.ok) return null;
   try { const j = JSON.parse(res.text); return (j.models || []).map(m => m.name); } catch (e) { return null; }
 }
@@ -218,4 +226,4 @@ async function ensemble(providerIds, args, deps) {
   return { answers, failures };
 }
 
-module.exports = { PROVIDERS, PROVIDER_IDS, DEFAULT_ORDER, SYSTEM_PROMPT, providerById, dryRun, parseReply, validateLocalUrl, chat, ollamaModels, ensemble };
+module.exports = { PROVIDERS, PROVIDER_IDS, DEFAULT_ORDER, SYSTEM_PROMPT, providerById, dryRun, parseReply, validateLocalUrl, chat, ollamaModels, ensemble, OLLAMA_PORT: () => OLLAMA_PORT };
