@@ -1,6 +1,6 @@
 # LIAM Status
 
-- **App:** LIAM Control Centre **v1.76.0** — local-first, truth-stated (Credentials surface: every connectable key with its portal guide; includes the v1.75.1 GitHub-connector and v1.73.1 OpenRouter repairs)
+- **App:** LIAM Control Centre **v1.76.1** — local-first, truth-stated (gemini default → 3.6-flash + label/verify repairs; includes the v1.75.1 GitHub-connector and v1.73.1 OpenRouter repairs)
 - **v1.76 surface:** Credentials workspace (CONTROL) — Connect/Verify/Revoke for groq · gemini · openrouter · deepseek · mistral · github · stripe · x · facebook · reddit · instagram · linkedin · tiktok, each card with its official developer-portal steps + link; tokens write-only (AES-256-GCM, never returned by APIs); X truthfully marked pay-per-use (no free tier in 2026)
 - **Connector states:** github VERIFIED (doomed689) · stripe VERIFIED (AU acct) when keys are present; weather/FX/wiki/DNS/HN/countries AVAILABLE key-free; proton NO PUBLIC API (truthful); social: x/facebook/reddit postable + instagram/linkedin/tiktok verify-only (official APIs, your developer credentials via the Credentials page, approval-gated posting); AI providers FREE KEY / LOCAL until connected
 - **v1.75 surface:** the Charter (`LEGAL-GLOBAL-TRUST-CHARTER.md`, legal id `charter`) — decentralized, worldwide, bound by no single jurisdiction; self-bound by the Prime Covenant to be correct, honest, trustworthy; user rights, enforcement instruments, additive amendment (§94)

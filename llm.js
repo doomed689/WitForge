@@ -30,7 +30,10 @@ const PROVIDERS = [
   {
     id: 'gemini', name: 'Google AI Studio (Gemini, free tier)', shape: 'gemini', requiresKey: true,
     keyHint: 'Google AI Studio', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
-    defaultModel: 'gemini-2.0-flash',
+    /* v1.76.1: default repaired — gemini-2.0-flash was retired upstream, and
+     * even 2.5-flash now answers new keys with 404 “no longer available to new
+     * users, use gemini-3.6-flash”. 3.6-flash is Google's current default tier. */
+    defaultModel: 'gemini-3.6-flash',
     free: 'free key, no card — rate-limited per model (roughly 15 req/min)',
     connect: 'connect gemini with token <your-free-key>'
   },
@@ -101,8 +104,10 @@ function dryRun(providerId, args) {
     };
   }
   if (p.shape === 'gemini') {
+    /* v1.76.1: model travels top-level too — the wire body has no model field
+     * on this shape, which left every Gemini reply labelled “gemini · undefined”. */
     return {
-      provider: p.id, url: p.endpoint + '/' + encodeURIComponent(model) + ':generateContent', method: 'POST',
+      provider: p.id, model, url: p.endpoint + '/' + encodeURIComponent(model) + ':generateContent', method: 'POST',
       headers: { 'x-goog-api-key': '<redacted-key>', 'content-type': 'application/json' },
       body: {
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -193,14 +198,14 @@ async function chat(providerId, args, deps) {
     res = await remoteFetch(req.url, headers, { method: 'POST', body: JSON.stringify(req.body), timeoutMs: 30000 });
   }
   const latencyMs = Date.now() - started;
-  if (!res.ok) return { ok: false, provider: p.id, model: req.body.model, latencyMs, error: (res.text || res.error || 'request failed').slice(0, 300) };
+  if (!res.ok) return { ok: false, provider: p.id, model: req.model || req.body.model, latencyMs, error: (res.text || res.error || 'request failed').slice(0, 300) };
   let payload;
-  try { payload = JSON.parse(res.text); } catch (e) { return { ok: false, provider: p.id, model: req.body.model, latencyMs, error: 'Non-JSON response from provider' }; }
+  try { payload = JSON.parse(res.text); } catch (e) { return { ok: false, provider: p.id, model: req.model || req.body.model, latencyMs, error: 'Non-JSON response from provider' }; }
   try {
     const out = parseReply(p.shape, payload);
-    return Object.assign({ ok: true, provider: p.id, model: req.body.model, latencyMs }, out);
+    return Object.assign({ ok: true, provider: p.id, model: req.model || req.body.model, latencyMs }, out);
   } catch (e) {
-    return { ok: false, provider: p.id, model: req.body.model, latencyMs, error: e.message };
+    return { ok: false, provider: p.id, model: req.model || req.body.model, latencyMs, error: e.message };
   }
 }
 

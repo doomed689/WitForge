@@ -18,7 +18,7 @@ const taskEngine = require('./task-engine.js');
 const services = require('./platform-services.js');
 const llm = require('./llm.js');
 
-const VERSION = '1.76.0';
+const VERSION = '1.76.1';
 
 const DATA = process.env.PLATFORM_DATA ? path.resolve(process.env.PLATFORM_DATA) : path.join(__dirname, 'data', 'platform.json');
 const USERFILES = path.join(__dirname, 'data', 'userfiles');
@@ -567,7 +567,7 @@ async function guardedFetch(url, headers, opts) {
   const t = setTimeout(() => ctl.abort(), 8000);
   try {
     const r = await fetch(u, { signal: ctl.signal, redirect: 'manual', method: opts.method || 'GET', body: opts.body || undefined, headers: Object.assign({ 'user-agent': 'LIAM-guarded-http/1.55' }, headers || {}) });
-    /* v1.76.0: redirects are still never followed, but they are no longer
+    /* v1.76.1: redirects are still never followed, but they are no longer
      * confused with genuine 4xx/5xx answers — the status travels back so the
      * caller can tell the user the truth (“HTTP 404”, not “HTTP undefined”).
      * opts.maxBytes raises the 20KB body cap for connectors whose valid JSON
@@ -728,7 +728,7 @@ const TOOLS = {
       if (!sub) return { error: 'file path required' };
       const r = await guardedFetch('https://api.github.com/repos/doomed689/WitForge/contents/' + encodeURIComponent(sub), {
         authorization: 'Bearer ' + tok, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'LIAM' }, { maxBytes: 500000 });
-      /* v1.76.0: report the true failure (HTTP 404 on a wrong-cased path, a
+      /* v1.76.1: report the true failure (HTTP 404 on a wrong-cased path, a
        * network error, …) — never the meaningless “HTTP undefined”. */
       if (!r.ok) return { error: 'GitHub read failed — ' + (r.error || ('HTTP ' + r.status)), truthful: true };
       let j; try { j = JSON.parse(r.text); } catch (e) { return { error: 'Bad GitHub response' }; }
@@ -852,7 +852,10 @@ const TOOLS = {
       const p = llmResolveProvider(a.provider);
       if (!p) return { error: 'Nothing to verify yet — say “connect <provider> with token <key>” first (groq/gemini/openrouter/deepseek/mistral are free-tier; ollama needs no key).', truthful: true };
       if (p.error) return p;
-      const r = await llm.chat(p.id, { prompt: 'Reply with the single word: ready', maxTokens: 8, temperature: 0 }, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
+      /* v1.76.1: 64 output tokens, not 8 — thinking models (gemini-3.x) spend
+       * output tokens on reasoning before any text arrives, so an 8-token
+       * probe returned an empty answer and a false FAILED. */
+      const r = await llm.chat(p.id, { prompt: 'Reply with the single word: ready', maxTokens: 64, temperature: 0 }, { remoteFetch: guardedFetch, localFetch: llmLocalFetch, apiKey: p.requiresKey ? decryptToken(p.id) : null });
       if (!r.ok) return { error: 'Verify FAILED against ' + p.id + ' (real call): ' + r.error, truthful: true };
       return { provider: r.provider, model: r.model, latencyMs: r.latencyMs, sample: r.content.slice(0, 40), verified: true };
     } },
@@ -1921,7 +1924,7 @@ async function command(text) {
   if ((m = low.match(/^(?:news|hn) top(?: (\d+))?$/))) { const r = await runTool('hn.top', { count: m[1] || 5 }, {}); return r.ok ? R('Top Hacker News:\n' + r.evidence.stories.map((x, i) => `${i + 1}. ${x.title} (${x.score}pts, ${x.by})\n   ${x.url}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = low.match(/^country (.+)$/))) { const r = await runTool('country.get', { name: m[1] }, {}); return r.ok ? R(`${r.evidence.flag || ''} ${r.evidence.name}: capital ${r.evidence.capital} · pop ${Number(r.evidence.population).toLocaleString()} · ${r.evidence.region} · ${r.evidence.currencies.join(', ') || '—'} · ${r.evidence.languages.join(', ') || '—'}.`) : R((r.evidence && r.evidence.error) || r.error); }
   if ((m = q.match(/^github (?:list|ls)(?: files)?(?: (.*))?$/i))) { const r = await runTool('github.files', { path: m[1] || '' }, {}); return r.ok ? R(`doomed689/WitForge ${r.evidence.path}:\n` + r.evidence.files.map(f => `${f.type === 'dir' ? '📁' : '📄'} ${f.name}${f.type !== 'dir' ? ' (' + f.size + 'B)' : ''}`).join('\n')) : R((r.evidence && r.evidence.error) || r.error); }
-  /* v1.76.0: paths keep the owner's original case (q, not low) — the GitHub
+  /* v1.76.1: paths keep the owner's original case (q, not low) — the GitHub
    * Contents API is case-sensitive, and lowercasing “STATUS.md” was a
    * guaranteed 404. */
   if ((m = q.match(/^github read (?:file )?(.+)$/i))) { const r = await runTool('github.readfile', { path: m[1] }, {}); return r.ok ? R(`${r.evidence.path} (${r.evidence.bytes}B, sha ${r.evidence.sha}):\n${r.evidence.text}${r.evidence.truncated ? '\n…(truncated)' : ''}`) : R((r.evidence && r.evidence.error) || r.error); }

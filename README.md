@@ -1,4 +1,11 @@
-# LIAM · v1.76 — the Credentials surface (every key, one page, portal guides)
+# LIAM · v1.76.1 — gemini default-model repair (3.6-flash) + label/verify fixes
+
+**v1.76.1 hotfix:** gemini-2.0-flash was retired upstream — and even 2.5-flash
+now 404s for new keys ("no longer available to new users, use
+gemini-3.6-flash"). Default is now `gemini-3.6-flash`. Also fixed, same probe:
+Gemini replies labelled `gemini · undefined` (wire body carries no model field)
+and `verify` failing truthful keys with an 8-token probe that thinking models
+spend entirely on reasoning (now 64). Verified live: `gemini · gemini-3.6-flash (893ms)`.
 
 **v1.76:** new CONTROL workspace **Credentials** — one card per connectable
 service (5 AI providers · 6 social platforms · GitHub · Stripe), each with its
